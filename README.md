@@ -89,6 +89,11 @@ Run **"SBLLM: Set Gemini API Key"** from the command palette (stored via VS Code
 | `sbllmOptimizer.geminiModel` | `gemini-3.6-flash` | Gemini model |
 | `sbllmOptimizer.maxIterations` | `4` | Max evolutionary search iterations (paper's own tuned optimum) |
 | `sbllmOptimizer.representativeSamples` | `3` | Ns — representative candidates shown to the model per iteration (paper's own tuned optimum) |
+| `sbllmOptimizer.generationNumber` | `4` | Candidates sampled per iteration (the paper's `generation_number`). Lower it to `1` for ~4x faster runs, at the cost of a much weaker search |
+
+### A note on `generationNumber`
+
+This is the setting most worth understanding. The paper generates several candidates per iteration, and that breadth is what makes the search *evolutionary* rather than a linear chain: the candidate pool has to grow larger than `Ns` for representative selection to have anything to choose between, and for GO-COT's crossover step to have genuinely distinct methods to combine. Setting it to `1` turns four iterations into a four-link chain and measurably degrades results — it's offered only because a slow local model makes the faithful default expensive in an interactive editor.
 
 ## Project structure
 
@@ -119,12 +124,27 @@ npm run package:vsix    # produce an installable .vsix
 npm run optimize        # run the core search loop from the CLI, no VS Code needed
 ```
 
+## Fidelity to the paper
+
+Every component of the paper's method is implemented: Algorithm 1 (execution-based representative sample selection with AST-abstraction dedup, and adaptive pattern retrieval of one similar plus one deliberately dissimilar pattern), Algorithm 2 (the evolutionary loop with its convergence condition), and GO-COT prompting with its crossover/mutation/conclude steps. The paper's tuned hyperparameters are used as defaults: `Ns = 3`, 4 iterations, temperature 0.7, and 4 candidates per iteration.
+
+Where the implementation departs from the paper, it is because the paper describes an offline benchmark pipeline and this is an interactive editor tool:
+
+| Paper | Here | Why |
+|---|---|---|
+| BM25 over PIE's 36K+ mined pattern pairs | 13 curated patterns, weighted token-Jaccard retrieval | No training corpus exists at inference time in an editor |
+| PIE's ~2.8 public / ~95.9 private test cases per problem | LLM-synthesized inputs, original function as its own oracle, split public/private | Arbitrary user-selected code ships with no test suite |
+| Mean of 25 runs, excluding the first | Batched `timeit`-style medians with paired baseline re-measurement | More reliable for the sub-millisecond functions common in an editor |
+
+Note also that Algorithm 1 in the paper specifies `acc == 1` for the correct group, while the authors' released `merge.py` uses `acc > 0`. This implementation follows the paper.
+
 ## Known limitations
 
 - **Python only** — the `LanguageAdapter` design supports adding other languages, but only Python is implemented.
 - **Top-level functions only** — class methods and nested functions aren't supported yet (a clear error is shown rather than producing incorrect results).
-- **Small pattern base** — 13 hand-curated patterns versus the paper's corpus mined from 36K+ training pairs, documented as a deliberate scope decision, not an oversight.
-- **Model-dependent quality** — small local models occasionally fail at subtler correctness-preserving transformations (e.g. multi-list intersections); this is a model capability limit, not a system defect, and the correctness oracle reliably rejects wrong candidates rather than accepting them.
+- **Small pattern base** — 13 hand-curated patterns versus the paper's corpus mined from 36K+ training pairs, a deliberate scope decision rather than an oversight. Each is verified to be self-contained and behaviour-preserving.
+- **Synthesized test cases are a heuristic** — the oracle infers intended input types from the code. It cannot know a contract the code doesn't express, so an optimization that is correct for realistic inputs but differs on an exotic one may still be rejected.
+- **Model-dependent quality** — small local models sometimes fail at subtler correctness-preserving transformations. This is a model capability limit, not a system defect; the correctness oracle rejects wrong candidates rather than accepting them.
 
 ## Roadmap
 
@@ -133,7 +153,19 @@ npm run optimize        # run the core search loop from the CLI, no VS Code need
 - Opt-in, workspace-local pattern store that grows from accepted optimizations
 - Lightweight proactive inefficiency hints (CodeLens)
 
+## Author
+
+**Pronob Karmoker**
+Institute of Information Technology (IIT), University of Dhaka
+Ex-Intern Software Engineer, Ithra (Aramco)
+
+GitHub: [@pronobkarmoker](https://github.com/pronobkarmoker)
+
+Built as a Software Project Lab 3 (SPL3) project at IIT, University of Dhaka, implementing the SBLLM method as an interactive developer tool.
+
 ## Reference
+
+This project is an independent implementation of the method described in the following paper. It is not affiliated with, nor endorsed by, the paper's authors.
 
 ```bibtex
 @inproceedings{gao2025sbllm,

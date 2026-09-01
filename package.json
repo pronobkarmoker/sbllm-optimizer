@@ -1,8 +1,15 @@
 {
   "name": "sbllm-optimizer",
   "displayName": "SBLLM Optimizer",
-  "description": "Search-based LLM code optimization — iteratively refines selected code using execution feedback and evolutionary search.",
-  "version": "0.1.0",
+  "description": "Search-based LLM code optimization for Python — generates multiple candidate optimizations, verifies each by actually running it, and iteratively evolves toward a faster, correct solution.",
+  "version": "0.2.0",
+  "author": {
+    "name": "Pronob Karmoker",
+    "url": "https://github.com/pronobkarmoker"
+  },
+  "contributors": [
+    "Pronob Karmoker <https://github.com/pronobkarmoker> (IIT, University of Dhaka)"
+  ],
   "publisher": "sbllm-optimizer-dev",
   "private": true,
   "icon": "media/icon.png",

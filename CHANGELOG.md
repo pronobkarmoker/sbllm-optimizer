@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+Fidelity and correctness work, from a component-by-component audit against the paper.
+
+- **Multiple candidates per iteration.** The search now samples several candidates each iteration (`generation_number`, the paper's setting, default 4) instead of one. Generating a single candidate had reduced the evolutionary search to a linear chain: the pool never grew beyond `Ns`, so representative selection had nothing to choose between and crossover had no distinct methods to combine. Configurable via `sbllmOptimizer.generationNumber`.
+- **Algorithm 1 now follows the paper.** Representative selection uses `acc == 1` for the correct group, as the paper's pseudocode states; the authors' released code uses `acc > 0`, which contradicts it.
+- **Optimization patterns are self-contained functions.** They were previously bare fragments with undefined variables, and models copied those names verbatim into generated code — a measured 19% of candidates in one run failed with `NameError: name 'target' is not defined`. All 13 patterns are now verified by AST analysis to have no free names, and by execution to be behaviour-preserving.
+- **Test-input synthesis respects the intended contract.** The oracle could invent inputs (e.g. nested lists) outside what a function was written for, which rules out entire classes of valid optimization and made correct candidates look wrong. It now infers and holds to the intended element type.
+- **More accurate speedup measurement.** The baseline is re-timed in the same subprocess as each candidate, removing a directional bias that made identical code report anywhere from 0.26x to 1.1x.
+- **Correct enclosing-function detection.** Indentation is now tracked when scanning for the enclosing `def`, fixing cases where the cursor bound to a preceding or nested function instead of the real one.
+
 ## 0.1.0
 
 Initial release.
