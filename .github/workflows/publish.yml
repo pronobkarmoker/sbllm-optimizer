@@ -23,6 +23,14 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+
+    # Hoisted to job level deliberately: the `secrets` context is NOT available inside step-level
+    # `if:` conditions, but `env` is — so this is what lets each publish step below skip itself
+    # when its token isn't configured, instead of failing the run.
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +56,17 @@ jobs:
           path: '*.vsix'
 
       - name: Publish to VS Code Marketplace
-        if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'marketplace' }}
+        if: ${{ env.VSCE_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'marketplace') }}
         run: npx vsce publish --no-dependencies --packagePath *.vsix
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      # The namespace must exist before the first publish, and creating it is a one-time
+      # operation — but it errors if it already exists, so failure is tolerated here rather
+      # than special-cased. Must match the `publisher` field in package.json.
+      - name: Ensure Open VSX namespace exists
+        if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
+        continue-on-error: true
+        run: npx ovsx create-namespace sbllm-optimizer-dev
 
       - name: Publish to Open VSX
-        if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx' }}
+        if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
         run: npx ovsx publish *.vsix
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
