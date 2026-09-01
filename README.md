@@ -155,13 +155,18 @@ Note also that Algorithm 1 in the paper specifies `acc == 1` for the correct gro
 
 ## Author
 
-**Pronob Karmoker**
-Institute of Information Technology (IIT), University of Dhaka
-Ex-Intern Software Engineer, Ithra (Aramco)
+### Pronob Karmoker
 
-GitHub: [@pronobkarmoker](https://github.com/pronobkarmoker)
+📍 Dhaka, Bangladesh · 🔗 [github.com/pronobkarmoker](https://github.com/pronobkarmoker)
 
-Built as a Software Project Lab 3 (SPL3) project at IIT, University of Dhaka, implementing the SBLLM method as an interactive developer tool.
+| | |
+|:--|:--|
+| 🎓 | **Software Engineering Student**<br>Institute of Information Technology (IIT), University of Dhaka |
+| 💼 | **Ex Software Engineer Intern**<br>Ithra, Aramco |
+| 📢 | **Ex Publicity Secretary**<br>IEEE Computer Society Student Branch, University of Dhaka |
+| ⚙️ | **Ex Executive Member**<br>IITSEC |
+
+> Built as a **Software Project Lab 3 (SPL3)** project at IIT, University of Dhaka — taking the SBLLM method from an offline research pipeline (ICSE'25) to an interactive developer tool that runs inside your editor.
 
 ## Reference
 
