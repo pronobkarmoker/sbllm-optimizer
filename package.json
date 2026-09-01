@@ -15,6 +15,22 @@
     "Other",
     "Machine Learning"
   ],
+  "keywords": [
+    "python",
+    "performance",
+    "optimization",
+    "refactoring",
+    "llm",
+    "ai",
+    "ollama",
+    "gemini",
+    "code speedup",
+    "profiling"
+  ],
+  "galleryBanner": {
+    "color": "#0F141E",
+    "theme": "dark"
+  },
   "activationEvents": [],
   "capabilities": {
     "untrustedWorkspaces": {
