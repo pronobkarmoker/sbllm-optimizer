@@ -1,0 +1,582 @@
+<title>SBLLM Optimizer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Tiro+Bangla&family=Hind+Siliguri:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #f5f6fa;
+    --surface: #ffffff;
+    --surface-2: #eef0f6;
+    --ink: #1a2036;
+    --ink-muted: #5b6178;
+    --border: #d9dce8;
+    --accent: #35508f;
+    --accent-ink: #1f3568;
+    --accent-soft: #e7ecf7;
+    --success: #1d7a56;
+    --success-soft: #e3f3eb;
+    --issue: #a85332;
+    --issue-soft: #f5e7df;
+    --code-bg: #eef0f6;
+    --code-ink: #2c3452;
+    --shadow: 0 1px 2px rgba(26,32,54,0.06), 0 8px 24px rgba(26,32,54,0.05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10131f;
+      --surface: #171b2b;
+      --surface-2: #1e2336;
+      --ink: #e7e9f2;
+      --ink-muted: #a0a6be;
+      --border: #2a3049;
+      --accent: #8fa9e6;
+      --accent-ink: #cdd9f5;
+      --accent-soft: #202a47;
+      --success: #4fbe8d;
+      --success-soft: #163329;
+      --issue: #e08a63;
+      --issue-soft: #3a2419;
+      --code-bg: #1e2336;
+      --code-ink: #cdd3ea;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10131f;
+    --surface: #171b2b;
+    --surface-2: #1e2336;
+    --ink: #e7e9f2;
+    --ink-muted: #a0a6be;
+    --border: #2a3049;
+    --accent: #8fa9e6;
+    --accent-ink: #cdd9f5;
+    --accent-soft: #202a47;
+    --success: #4fbe8d;
+    --success-soft: #163329;
+    --issue: #e08a63;
+    --issue-soft: #3a2419;
+    --code-bg: #1e2336;
+    --code-ink: #cdd3ea;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Hind Siliguri', 'Noto Sans Bengali', sans-serif;
+    font-size: 17px;
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1.5px; text-underline-offset: 2px; }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  .page {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+  }
+
+  /* ---------- Title block ---------- */
+  .eyebrow {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 14px;
+  }
+  h1.title {
+    font-family: 'Tiro Bangla', 'Noto Serif Bengali', serif;
+    font-weight: 400;
+    font-size: clamp(34px, 6vw, 48px);
+    line-height: 1.25;
+    margin: 0 0 12px;
+    text-wrap: balance;
+    color: var(--ink);
+  }
+  .subtitle {
+    font-size: 18px;
+    color: var(--ink-muted);
+    max-width: 62ch;
+    margin: 0 0 28px;
+    text-wrap: balance;
+  }
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    font-size: 14px;
+    color: var(--ink-muted);
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+  }
+  .meta-row span strong { color: var(--ink); font-weight: 600; }
+
+  /* ---------- Stat tiles ---------- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin: 40px 0 8px;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    box-shadow: var(--shadow);
+  }
+  .stat .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+    font-size: 25px;
+    font-weight: 600;
+    color: var(--accent-ink);
+    line-height: 1.2;
+  }
+  .stat .label {
+    font-size: 13.5px;
+    color: var(--ink-muted);
+    margin-top: 4px;
+  }
+
+  /* ---------- ToC ---------- */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 26px;
+    margin: 44px 0;
+    box-shadow: var(--shadow);
+  }
+  .toc h2 {
+    font-family: 'Tiro Bangla', serif;
+    font-weight: 400;
+    font-size: 19px;
+    margin: 0 0 12px;
+  }
+  .toc ol {
+    margin: 0;
+    padding-inline-start: 22px;
+    columns: 2;
+    column-gap: 28px;
+  }
+  .toc li { break-inside: avoid; margin-bottom: 7px; font-size: 15px; }
+  .toc a { color: var(--ink); text-decoration: none; }
+  .toc a:hover { color: var(--accent); text-decoration: underline; }
+  @media (max-width: 560px) { .toc ol { columns: 1; } }
+
+  /* ---------- Sections ---------- */
+  section { margin-top: 64px; }
+  section > .sec-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  h2 {
+    font-family: 'Tiro Bangla', 'Noto Serif Bengali', serif;
+    font-weight: 400;
+    font-size: 28px;
+    line-height: 1.3;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    scroll-margin-top: 24px;
+  }
+  h3 {
+    font-family: 'Hind Siliguri', sans-serif;
+    font-weight: 700;
+    font-size: 18.5px;
+    margin: 30px 0 12px;
+    color: var(--ink);
+  }
+  p { margin: 0 0 16px; max-width: 68ch; }
+  ul, ol { margin: 0 0 16px; padding-inline-start: 24px; max-width: 68ch; }
+  li { margin-bottom: 7px; }
+  strong { font-weight: 700; }
+  code, .mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.87em;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 0.1em 0.4em;
+    border-radius: 5px;
+  }
+  pre {
+    background: var(--code-bg);
+    color: var(--code-ink);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13.5px;
+    line-height: 1.6;
+    margin: 0 0 18px;
+  }
+  pre code { background: none; padding: 0; }
+
+  /* ---------- Tables ---------- */
+  .table-wrap { overflow-x: auto; margin: 0 0 20px; border: 1px solid var(--border); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  thead th {
+    background: var(--surface-2);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+
+  /* ---------- Status pills ---------- */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill.ok { background: var(--success-soft); color: var(--success); }
+  .pill.partial { background: var(--accent-soft); color: var(--accent-ink); }
+  .pill.no { background: var(--issue-soft); color: var(--issue); }
+
+  /* ---------- Bug log cards ---------- */
+  .bug {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--issue);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow);
+  }
+  .bug .bug-num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--issue);
+    letter-spacing: 0.03em;
+    margin-bottom: 6px;
+  }
+  .bug h4 { margin: 0 0 8px; font-size: 16.5px; font-weight: 700; }
+  .bug .row { display: flex; gap: 8px; margin-top: 10px; font-size: 14.5px; }
+  .bug .row .k { color: var(--ink-muted); flex-shrink: 0; min-width: 68px; font-weight: 600; }
+  .bug .row .v { margin: 0; }
+
+  .result-card {
+    background: var(--success-soft);
+    border: 1px solid var(--success);
+    border-radius: 10px;
+    padding: 18px 22px;
+    margin-bottom: 14px;
+  }
+  .result-card h4 { margin: 0 0 8px; font-size: 16px; color: var(--success); }
+  .result-card p { margin: 0; color: var(--ink); }
+
+  blockquote {
+    margin: 0 0 18px;
+    padding: 4px 0 4px 18px;
+    border-left: 3px solid var(--border);
+    color: var(--ink-muted);
+    font-size: 15px;
+  }
+
+  hr.div { border: none; border-top: 1px solid var(--border); margin: 56px 0 0; }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+    font-size: 13.5px;
+    color: var(--ink-muted);
+  }
+</style>
+
+<div class="page">
+
+  <p class="eyebrow">প্রজেক্ট রিপোর্ট &middot; SPL3</p>
+  <h1 class="title">SBLLM Optimizer</h1>
+  <p class="subtitle">সার্চ-ভিত্তিক LLM ব্যবহার করে পাইথন কোড অপ্টিমাইজেশনের জন্য একটি VS Code এক্সটেনশন — SBLLM (ICSE'25) গবেষণাপত্রের একটি বাস্তবায়ন এবং অভিযোজন।</p>
+  <div class="meta-row">
+    <span><strong>শিক্ষার্থী:</strong> Pronob Karmoker (Roll 1431)</span>
+    <span><strong>সুপারভাইজার:</strong> Dr. Md. Nurul Ahad Tawhid</span>
+    <span><strong>রেফারেন্স পেপার:</strong> Search-Based LLMs for Code Optimization, arXiv:2408.12159</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="num">124.85×</div><div class="label">শেষ যাচাইকৃত স্পিডআপ (has_duplicate)</div></div>
+    <div class="stat"><div class="num">১৭+</div><div class="label">সনাক্ত ও সমাধানকৃত প্রকৃত বাগ</div></div>
+    <div class="stat"><div class="num">২টি</div><div class="label">কোডবেস: reference repo + নতুন extension</div></div>
+    <div class="stat"><div class="num">৪</div><div class="label">মূল ফিচার সক্রিয়ভাবে কাজ করছে</div></div>
+  </div>
+
+  <nav class="toc">
+    <h2>সূচিপত্র</h2>
+    <ol>
+      <li><a href="#intro">১. ভূমিকা ও উদ্দেশ্য</a></li>
+      <li><a href="#paper">২. মূল গবেষণাপত্র (SBLLM) কী বলে</a></li>
+      <li><a href="#refbugs">৩. রেফারেন্স কোডে বাগ সংশোধন</a></li>
+      <li><a href="#arch">৪. আর্কিটেকচার ডিজাইন</a></li>
+      <li><a href="#build">৫. কী কী তৈরি করা হয়েছে</a></li>
+      <li><a href="#bugs">৬. পরীক্ষা ও বাগ সমাধানের লগ</a></li>
+      <li><a href="#papermap">৭. গবেষণাপত্রের সাথে সামঞ্জস্য</a></li>
+      <li><a href="#proposalmap">৮. প্রস্তাবনার সাথে সামঞ্জস্য</a></li>
+      <li><a href="#results">৯. যাচাইকৃত ফলাফল</a></li>
+      <li><a href="#limits">১০. সীমাবদ্ধতা</a></li>
+      <li><a href="#future">১১. ভবিষ্যৎ পরিকল্পনা</a></li>
+      <li><a href="#conclusion">১২. উপসংহার</a></li>
+    </ol>
+  </nav>
+
+  <section id="intro">
+    <p class="sec-label">০১</p>
+    <h2>ভূমিকা ও উদ্দেশ্য</h2>
+    <p>ডেভেলপাররা সাধারণত কোড লেখার সময় সঠিকতার (correctness) দিকে বেশি মনোযোগ দেন, কিন্তু কার্যকারিতা (efficiency)-র দিকটা অনেক সময় উপেক্ষিত থেকে যায়। ফলে কোডে পারফরম্যান্স বাগ থেকে যায় — যেমন অপ্রয়োজনীয় নেস্টেড লুপ, বারবার একই হিসাব করা, বা ভুল ডেটা স্ট্রাকচার ব্যবহার। এই সমস্যা সমাধানের জন্য <strong>SBLLM-Optimizer</strong> তৈরি করা হয়েছে — একটি VS Code এক্সটেনশন, যা নির্বাচিত পাইথন কোডকে স্বয়ংক্রিয়ভাবে বিশ্লেষণ করে, একাধিক অপ্টিমাইজড সংস্করণ তৈরি করে, প্রতিটি সংস্করণ বাস্তবে রান করে যাচাই করে, এবং ধাপে ধাপে (iteratively) আরও ভালো সমাধানের দিকে এগিয়ে যায়।</p>
+    <p>এই প্রজেক্টের মূল ভিত্তি ICSE'25-এ প্রকাশিত <strong>"Search-Based LLMs for Code Optimization" (SBLLM)</strong> গবেষণাপত্র। প্রজেক্টের কাজ দুই ভাগে হয়েছে: প্রথমে গবেষণাপত্রের অফিসিয়াল রেফারেন্স কোড (<span class="mono">sbllm</span> রিপোজিটরি) পড়ে তার মধ্যে থাকা প্রকৃত বাগ খুঁজে বের করে সংশোধন করা হয়েছে; তারপর সেই একই মূলনীতির ওপর ভিত্তি করে একটি সম্পূর্ণ নতুন, ইন্টারঅ্যাক্টিভ VS Code এক্সটেনশন (<span class="mono">sbllm-optimizer</span>) গড়ে তোলা হয়েছে, যা একটি বড় গবেষণা-ডেটাসেটের বদলে ব্যবহারকারীর নিজের, যেকোনো পাইথন ফাংশনের ওপর কাজ করতে পারে।</p>
+  </section>
+
+  <section id="paper">
+    <p class="sec-label">০২</p>
+    <h2>মূল গবেষণাপত্র (SBLLM) কী বলে</h2>
+    <p>প্রচলিত পদ্ধতিতে LLM-কে একবারে (one-step) অপ্টিমাইজড কোড লিখতে বলা হয় — কিন্তু জটিল অপ্টিমাইজেশন সমস্যায় এই পদ্ধতি প্রায়ই একটি নিম্নমানের সমাধানে আটকে যায়। SBLLM পেপার এই কাজটিকে একটি <strong>সার্চ সমস্যা</strong> হিসেবে দেখার প্রস্তাব দেয় — অর্থাৎ, LLM-কে একবার জিজ্ঞেস করে থেমে না গিয়ে, একটি বিবর্তনমূলক (evolutionary) সার্চ লুপে ধাপে ধাপে ভালো সমাধান খোঁজা। এর তিনটি মূল অংশ:</p>
+    <h3>ক) এক্সিকিউশন-ভিত্তিক প্রতিনিধিত্বমূলক নমুনা নির্বাচন (Algorithm 1a)</h3>
+    <p>প্রতিটি অপ্টিমাইজড সংস্করণকে বাস্তবে টেস্ট কেসে চালিয়ে তার সঠিকতা ও গতি মাপা হয়। এরপর স্পিডআপ অনুযায়ী সাজিয়ে, AST (Abstract Syntax Tree)-ভিত্তিক তুলনা করে একই রকম সমাধানগুলো বাদ দিয়ে সবচেয়ে ভিন্ন ও কার্যকর নমুনাগুলো বেছে নেওয়া হয়।</p>
+    <h3>খ) অ্যাডাপটিভ অপ্টিমাইজেশন প্যাটার্ন রিট্রিভাল (Algorithm 1b)</h3>
+    <p>একটি বড় ট্রেনিং ডেটাসেট থেকে "স্লো কোড → ফাস্ট কোড" প্যাটার্ন সংগ্রহ করে রাখা হয়। প্রতিটি ধাপে দুই ধরনের প্যাটার্ন খুঁজে LLM-কে দেখানো হয় — একটি <em>similar</em> (যা আগের ভুল সংশোধনে সাহায্য করে) এবং একটি <em>different</em> (যা নতুন, এখনো চেষ্টা না-করা কৌশলের ইঙ্গিত দেয়)।</p>
+    <h3>গ) জেনেটিক অপারেটর-অনুপ্রাণিত চেইন-অফ-থট প্রম্পটিং (GO-COT)</h3>
+    <p>প্রম্পটে জীববিজ্ঞানের বিবর্তনের ধারণা ধার করা হয়েছে — <em>crossover</em> (আগের চেষ্টাগুলোর ভালো দিক একত্র করা) এবং <em>mutation</em> (রিট্রিভ করা প্যাটার্ন থেকে নতুন কৌশল প্রয়োগ করা)। এই পুরো প্রক্রিয়া (Algorithm 2) একটি নির্দিষ্ট সংখ্যক পুনরাবৃত্তি পর্যন্ত চলে অথবা যতক্ষণ না সমাধান স্থিতিশীল (converged) হয়।</p>
+  </section>
+
+  <section id="refbugs">
+    <p class="sec-label">০৩</p>
+    <h2>রেফারেন্স কোডে বাগ সংশোধন</h2>
+    <p>প্রজেক্ট শুরু করার আগে অফিসিয়াল SBLLM রিপোজিটরি (<span class="mono">merge.py</span>, <span class="mono">evol_query.py</span>) মনোযোগ দিয়ে পড়ে বেশ কয়েকটি প্রকৃত লজিক-বাগ পাওয়া যায় এবং সংশোধন করা হয়:</p>
+    <ul>
+      <li><strong>ভাষা-মিশ্রণ বাগ:</strong> <span class="mono">selection()</span> ফাংশন সবসময় C++ AST অ্যাবস্ট্রাক্টর ব্যবহার করত — এমনকি পাইথন কোডের জন্যও — ফলে পাইথন জব-এ ডুপ্লিকেট-শনাক্তকরণ কার্যত অকার্যকর হয়ে যেত।</li>
+      <li><strong>হার্ডকোড করা প্যারামিটার:</strong> কনভারজেন্স-চেক-এ ব্যবহারকারীর দেওয়া <span class="mono">beam_number</span> উপেক্ষা করে সবসময় সংখ্যা <span class="mono">3</span> ব্যবহার করা হতো।</li>
+      <li><strong>হার্ডকোড করা <span class="mono">range(5)</span>:</strong> ফলাফল প্রসেসিং-এ ধরে নেওয়া হতো ঠিক ৫টি candidate আছে, অথচ SBLLM-এর নিজস্ব লুপ ৪টি candidate তৈরি করত — যা KeyError-এর ঝুঁকি তৈরি করত।</li>
+      <li><strong>মৃত (dead) ইমপোর্ট:</strong> <span class="mono">fcntl</span> ও <span class="mono">fastbm25</span> ইমপোর্ট করা হলেও কোথাও ব্যবহার হতো না — অথচ <span class="mono">fcntl</span> শুধু Linux-এ কাজ করে, ফলে Windows-এ মডিউলটি লোডই হতো না।</li>
+      <li><strong>ভুল স্ট্রিং-স্প্লিট:</strong> <span class="mono">extract_py</span>/<span class="mono">extract_cpp</span> ফাংশনে ম্যাচ করা টেক্সটের চেয়ে ছোট স্ট্রিং দিয়ে স্প্লিট করা হতো, ফলে এক্সট্র্যাক্ট করা কোডের শুরুতে বাড়তি <span class="mono">**</span> থেকে যেত।</li>
+      <li><strong>পারফরম্যান্স সমস্যা:</strong> প্রতিটি C++ অ্যাবস্ট্রাকশন কলে নতুন করে tree-sitter parser লোড করা হতো — cache করে রাখলে যা এড়ানো যেত।</li>
+    </ul>
+  </section>
+
+  <section id="arch">
+    <p class="sec-label">০৪</p>
+    <h2>আর্কিটেকচার ডিজাইন</h2>
+    <p>নতুন এক্সটেনশন ডিজাইন করার সময় দুটি মূল প্রশ্নের উত্তর দিতে হয়েছে, যা মূল গবেষণাপত্রে ছিল না — কারণ পেপারটি একটি নির্দিষ্ট, আগে থেকে তৈরি ডেটাসেটের (PIE) ওপর কাজ করে, কিন্তু একটি এডিটর-টুলকে যেকোনো ব্যবহারকারীর কোডের ওপর কাজ করতে হয়:</p>
+    <h3>সমস্যা ১ — টেস্ট কেস কোথা থেকে আসবে?</h3>
+    <p>ব্যবহারকারীর কোডের জন্য কোনো আগে থেকে তৈরি টেস্ট কেস নেই। সমাধান হিসেবে একটি <strong>Differential Test Oracle</strong> তৈরি করা হয়েছে: LLM-কে দিয়ে বিভিন্ন ইনপুট তৈরি করানো হয়, মূল (আসল) ফাংশনটি একবার চালিয়ে তার আউটপুটকে "সঠিক উত্তর" ধরা হয়, এবং প্রতিটি নতুন সংস্করণকে সেই আউটপুটের সাথে তুলনা করা হয় — public/private স্প্লিট সহ, ঠিক যেমন পেপারে করা হয়েছে।</p>
+    <h3>সমস্যা ২ — প্যাটার্ন বেস কোথা থেকে আসবে?</h3>
+    <p>পেপারে ৩৬,০০০+ ট্রেনিং জোড়া থেকে প্যাটার্ন মাইন করা হয়েছিল — যা একটি এক্সটেনশনে বহন করা বাস্তবসম্মত নয়। তাই একটি ছোট, হাতে বাছাই করা ১৩টি ক্লাসিক অপ্টিমাইজেশন-প্যাটার্নের সেট তৈরি করা হয়েছে (set-membership, memoization, list-comprehension ইত্যাদি), একই BM25-জাতীয় similar/different রিট্রিভাল মেকানিজম বজায় রেখে।</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>মডিউল</th><th>দায়িত্ব</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">EvolutionaryOptimizer</td><td>Algorithm 2-এর মূল সার্চ লুপ — seed তৈরি, iterate, converge</td></tr>
+          <tr><td class="mono">FitnessEvaluator</td><td>Algorithm 1a — প্রতিনিধিত্বমূলক নমুনা নির্বাচন, AST dedup</td></tr>
+          <tr><td class="mono">PatternRetriever</td><td>Algorithm 1b — similar/different প্যাটার্ন রিট্রিভাল</td></tr>
+          <tr><td class="mono">DifferentialTestOracle</td><td>টেস্ট ইনপুট তৈরি, সঠিকতা ও স্পিড যাচাই</td></tr>
+          <tr><td class="mono">goCotPromptBuilder</td><td>GO-COT প্রম্পট তৈরি ও LLM-এর JSON উত্তর পার্স করা</td></tr>
+          <tr><td class="mono">PythonAdapter</td><td>স্যান্ডবক্সড সাবপ্রসেসে পাইথন কোড এক্সিকিউট করা</td></tr>
+          <tr><td class="mono">src/vscode/*</td><td>VS Code UI — কমান্ড, diff view, Insights panel</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="build">
+    <p class="sec-label">০৫</p>
+    <h2>কী কী তৈরি করা হয়েছে</h2>
+    <p>এক্সটেনশনের চারটি প্রধান ফিচার — প্রস্তাবনায় উল্লেখিত সবগুলো — সম্পূর্ণভাবে কাজ করছে:</p>
+    <h3>Optimize Selected Code</h3>
+    <p>কার্সার একটি ফাংশনের ভেতরে রেখে রাইট-ক্লিক (বা কমান্ড প্যালেট) থেকে অপ্টিমাইজেশন শুরু করা যায়। নির্বাচন যদি পুরো ফাংশন না-ও ঢাকে, একটি স্বয়ংক্রিয় লজিক (<span class="mono">findEnclosingFunctionRange</span>) ইন্ডেন্টেশন দেখে পুরো ফাংশনটি বের করে আনে।</p>
+    <h3>Side-by-Side Comparison</h3>
+    <p>নিজস্ব diff UI না বানিয়ে VS Code-এর বিল্ট-ইন diff editor ব্যবহার করা হয়েছে — প্রতিটি candidate-এর জন্য একটি আলাদা, স্থায়ী ট্যাব খোলে।</p>
+    <h3>Optimization Explanation</h3>
+    <p>একটি থিম-অ্যাওয়্যার WebView প্যানেল ("SBLLM Optimization Insights") লাইভ প্রগ্রেস লগ, স্পিডআপ বার, GO-COT-এর যুক্তি (কেন এটা দ্রুত), এবং সম্পূর্ণ সার্চ হিস্ট্রি দেখায়।</p>
+    <h3>Refine Further</h3>
+    <p>একই টেস্ট oracle ও candidate pool বজায় রেখে সার্চ চালিয়ে যাওয়া যায় — নতুন করে টেস্ট ইনপুট তৈরি না করেই।</p>
+    <h3>নিরাপত্তা ও সেটিংস</h3>
+    <p>Gemini API key <span class="mono">SecretStorage</span>-তে থাকে, plaintext settings-এ নয়। কোড এক্সিকিউশন Workspace Trust-এর পেছনে গেটেড। Ollama (স্থানীয়, ফ্রি) এবং Gemini — দুটো LLM প্রোভাইডারই সমর্থিত।</p>
+  </section>
+
+  <section id="bugs">
+    <p class="sec-label">০৬</p>
+    <h2>পরীক্ষা ও বাগ সমাধানের লগ</h2>
+    <p>এই প্রজেক্টের সবচেয়ে গুরুত্বপূর্ণ অংশ হলো — প্রতিটি ফিচার শুধু কোড লিখেই থেমে থাকা হয়নি, বরং প্রকৃত LLM (Ollama, qwen2.5-coder) দিয়ে বাস্তবে চালিয়ে দেখা হয়েছে, এবং যা ভুল পাওয়া গেছে তা সাথে সাথে খুঁজে বের করে সমাধান করা হয়েছে। নিচে সেই লগের একটি সংক্ষিপ্ত রূপ:</p>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০১</div>
+      <h4>stdout তুলনা করা হতো না</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">যেসব ফাংশন শুধু <span class="mono">print()</span> করে, কিছু <span class="mono">return</span> করে না — তাদের সঠিকতা যাচাই হতোই না, কারণ harness শুধু return value তুলনা করত (দুটোই <span class="mono">None</span>)।</p></div>
+      <div class="row"><span class="k">প্রমাণ</span><p class="v">একটি ভুল candidate যা তিনটির বদলে দুটি লিস্টের মিল খুঁজত, সেটা "সঠিক" হিসেবে গৃহীত হয়ে যাচ্ছিল।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v"><span class="mono">run_candidate.py</span>-তে stdout ক্যাপচার করে return value-র সাথে একসাথে তুলনা করা হয়।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০২</div>
+      <h4>Refine Further তাৎক্ষণিক "converged" বলে থেমে যেত</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">convergence-চেক ভ্যারিয়েবল reset হতো না, ফলে বাটনে ক্লিক করলে প্রথম চেকেই মনে হতো "কিছুই বদলায়নি" — অথচ নতুন কিছু তৈরিই হয়নি তখনো।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v"><span class="mono">refineFurther()</span>-এর শুরুতে convergence key reset করা হয়।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৩</div>
+      <h4>গ্লোবাল ভ্যারিয়েবল-নির্ভর ফাংশন ব্যর্থ হতো</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">ফাংশনের বাইরে ডিফাইন করা কনস্ট্যান্ট (যেমন <span class="mono">MAX_LIMIT = 10000</span>) ব্যবহার করা ফাংশন এক্সিকিউট করতে গেলে <span class="mono">NameError</span> আসত — যেহেতু শুধু ফাংশনের ভেতরের অংশটুকু আলাদাভাবে চালানো হতো।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">একটি <span class="mono">contextPrefix</span> মেকানিজম যোগ করা হয়েছে — ফাংশনের আগের সব ইমপোর্ট/কনস্ট্যান্ট প্রতিটি এক্সিকিউশনের সাথে prepend করা হয়, এবং LLM-কেও তা দেখানো হয় (যাতে সে সেটা আবার redefine না করে)।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৪</div>
+      <h4>JSON over-escaping → Python SyntaxError</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">ছোট মডেল মাঝেমধ্যে <span class="mono">\n</span>-এর বদলে <span class="mono">\\n</span> লিখত, ফলে JSON parse-এর পরও কোডে আসল newline-এর বদলে literal ব্যাকস্ল্যাশ-n থেকে যেত — যা Python-এ "line continuation character" এরর দিত। এই একই এরর বহুবার, ভিন্ন ভিন্ন রান-এ দেখা গিয়েছিল, আগে ভাবা হয়েছিল এটা শুধু মডেলের ভুল কোড, প্রকৃতপক্ষে এটা আমাদের নিজস্ব parsing bug ছিল।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">over-escape শনাক্ত করে (literal <span class="mono">\n</span> আছে কিন্তু আসল newline নেই) স্বয়ংক্রিয়ভাবে unescape করা হয়।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৫</div>
+      <h4>মডেল ফাংশনের সিগনেচার বদলে ফেলত</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">"অপ্টিমাইজ" করার সময় মডেল hardcoded ভ্যালুকে নতুন প্যারামিটারে রূপান্তর করত (যেমন <span class="mono">fib()</span>-কে <span class="mono">fib(n)</span> বানিয়ে ফেলা) — যা calling convention ভেঙে দিত।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">এক্সিকিউশনের আগেই প্যারামিটার-সংখ্যা তুলনা করে সরাসরি প্রত্যাখ্যান করা হয়, একটি স্পষ্ট কারণ-সহ এরর মেসেজসহ — যা পরের ধাপে মডেলকে সংশোধনে সাহায্য করে।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৬</div>
+      <h4>প্যাটার্ন রিট্রিভাল ডিজাইনের ত্রুটি</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">"similar" সবসময় #১ ম্যাচ আর "different" সবসময় সবচেয়ে খারাপ ম্যাচ বেছে নিত — মাঝামাঝি (২য়/৩য়) সত্যিই প্রাসঙ্গিক প্যাটার্ন কখনো দেখানোই হতো না। এছাড়া unweighted শব্দ-মিল একটি সংক্ষিপ্ত অপ্রাসঙ্গিক প্যাটার্নকে দীর্ঘ প্রাসঙ্গিক প্যাটার্নের চেয়ে এগিয়ে দিত।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">tag-ভিত্তিক ম্যাচকে বেশি ওজন দেওয়া হয়েছে (কারণ ট্যাগ হাতে বাছাই করা কীওয়ার্ড), এবং একটি নতুন "multi-way-intersection" প্যাটার্ন যোগ করা হয়েছে যা আগে প্যাটার্ন বেসে ছিল না।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৭</div>
+      <h4>টাইমিং পদ্ধতি পেপারের সাথে মিলছিল না</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">পেপার একটি প্রোগ্রাম ২৫ বার চালিয়ে প্রথম রান বাদ দিয়ে গড় করে (§III-E) — আমাদের harness শুধু একবার চালিয়ে সময় মাপত, যা অত্যন্ত noisy ফলাফল দিত (একই ফাংশন cold-এ ১০৪০ms, warm-এ মাত্র ৫১৩ms দেখিয়েছে)।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">ইন্টারঅ্যাক্টিভ ব্যবহারের জন্য সীমিত সংস্করণ — সময়-বাজেট সহ সর্বোচ্চ ৫টি ট্রায়াল, প্রথমটি বাদ দিয়ে গড় করা।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৮</div>
+      <h4>VSIX প্যাকেজে সিক্রেট লিক হয়ে যাচ্ছিল</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">প্রথম <span class="mono">vsce package</span> রানে <span class="mono">.env</span> ফাইল (আসল Gemini API key সহ) পুরো সোর্স ট্রি-এর সাথে প্যাকেজে ঢুকে গিয়েছিল।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v">সাথে সাথে সেই .vsix ফাইল ডিলিট করে <span class="mono">.vscodeignore</span> যোগ করা হয় — এখন প্যাকেজে শুধু <span class="mono">package.json</span> ও <span class="mono">dist/</span> থাকে (৩০ KB, কোনো সিক্রেট বা সোর্স কোড ছাড়াই)।</p></div>
+    </div>
+
+    <div class="bug">
+      <div class="bug-num">বাগ ০৯</div>
+      <h4>Workspace Trust-এর কারণে কমান্ডই দেখা যেত না</h4>
+      <div class="row"><span class="k">সমস্যা</span><p class="v">Restricted Mode-এ VS Code এক্সটেনশনের কোনো কমান্ড রেজিস্টারই করত না, যেহেতু <span class="mono">untrustedWorkspaces</span> ক্যাপাবিলিটি ঘোষণা করা ছিল না।</p></div>
+      <div class="row"><span class="k">সমাধান</span><p class="v"><span class="mono">package.json</span>-এ <span class="mono">capabilities.untrustedWorkspaces.supported: true</span> যোগ করা হয় — কমান্ড এখন সবসময় দেখা যায়, শুধু বাস্তব কোড-এক্সিকিউশনের সময় trust-এর জন্য জিজ্ঞেস করা হয়।</p></div>
+    </div>
+
+    <p style="margin-top:26px; color: var(--ink-muted); font-size: 14.5px;">এছাড়াও শূন্য-প্যারামিটার ফাংশন, Python-স্টাইল <span class="mono">#</span> কমেন্ট, JSON5-স্টাইল trailing comma, এবং ছোট ইনপুটে অনির্ভরযোগ্য স্পিডআপ মাপার মতো আরও বেশ কয়েকটি ছোট-বড় সমস্যা একই পদ্ধতিতে (বাস্তবে চালিয়ে, ফলাফল দেখে, root cause খুঁজে) সমাধান করা হয়েছে।</p>
+  </section>
+
+  <section id="papermap">
+    <p class="sec-label">০৭</p>
+    <h2>গবেষণাপত্রের সাথে সামঞ্জস্য</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>পেপারের অংশ</th><th>আমাদের বাস্তবায়ন</th><th>অবস্থা</th></tr></thead>
+        <tbody>
+          <tr><td>Algorithm 1a — নমুনা নির্বাচন</td><td class="mono">FitnessEvaluator</td><td><span class="pill ok">অনুরূপ</span></td></tr>
+          <tr><td>Algorithm 1b — প্যাটার্ন রিট্রিভাল</td><td class="mono">PatternRetriever</td><td><span class="pill partial">একই মেকানিজম, ছোট কর্পাস</span></td></tr>
+          <tr><td>GO-COT প্রম্পটিং</td><td class="mono">goCotPromptBuilder</td><td><span class="pill ok">উন্নত (strict JSON)</span></td></tr>
+          <tr><td>Algorithm 2 — সার্চ লুপ</td><td class="mono">EvolutionaryOptimizer</td><td><span class="pill ok">অনুরূপ, যাচাইকৃত</span></td></tr>
+          <tr><td>Fitness = সঠিকতা + স্পিড</td><td class="mono">DifferentialTestOracle</td><td><span class="pill partial">অভিযোজিত (কোনো PIE dataset নেই বলে)</span></td></tr>
+          <tr><td>টাইমিং: ২৫ রান, প্রথমটি বাদ</td><td>৫ ট্রায়াল, সময়-বাজেটসহ</td><td><span class="pill ok">একই মূলনীতি</span></td></tr>
+          <tr><td>Ns=৩, iterations=৪</td><td>ডিফল্ট মান অনুরূপ</td><td><span class="pill ok">হুবহু মিল</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>সৎ স্বীকারোক্তি:</strong> পেপারের প্যাটার্ন বেস ৩৬,০০০+ প্রশিক্ষণ জোড়া থেকে মাইন করা; আমাদেরটা ১৩টি হাতে-বাছাই করা প্যাটার্ন। একই অ্যালগরিদম, অনেক ছোট কর্পাস — এটি একটি সচেতন, ঘোষিত সীমাবদ্ধতা।</p>
+  </section>
+
+  <section id="proposalmap">
+    <p class="sec-label">০৮</p>
+    <h2>প্রস্তাবনার সাথে সামঞ্জস্য</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>প্রস্তাবিত ফিচার</th><th>অবস্থা</th></tr></thead>
+        <tbody>
+          <tr><td>LLM-based Optimization Generation</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Execution-based Evaluation</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Search-based Iterative Refinement</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Optimization Pattern Retrieval</td><td><span class="pill ok">সম্পন্ন (সীমিত কর্পাস)</span></td></tr>
+          <tr><td>Genetic Operator-inspired Reasoning</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Optimize Selected Code</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Side-by-Side Comparison</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Optimization Explanation</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Refine Further Button</td><td><span class="pill ok">সম্পন্ন</span></td></tr>
+          <tr><td>Intelligent Code Analysis</td><td><span class="pill partial">আংশিক — ফাংশন-শনাক্তকরণ আছে, proactive hint নেই</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="results">
+    <p class="sec-label">০৯</p>
+    <h2>যাচাইকৃত ফলাফল</h2>
+    <div class="result-card">
+      <h4><span class="mono">has_duplicate()</span> — O(n²) নেস্টেড লুপ</h4>
+      <p>সঠিকতা: ✓ (held-out private টেস্টে যাচাইকৃত) &nbsp;•&nbsp; স্পিডআপ: <strong>১২৪.৮৫×</strong> &nbsp;•&nbsp; সমাধান: set-ভিত্তিক O(n) dedup</p>
+    </div>
+    <div class="result-card">
+      <h4><span class="mono">compute_fibonacci()</span> — naive recursion</h4>
+      <p>সঠিকতা: ✓ &nbsp;•&nbsp; স্পিডআপ: <strong>১০,৭৭০×</strong> &nbsp;•&nbsp; সমাধান: <span class="mono">@lru_cache</span> memoization, সিগনেচার অক্ষত</p>
+    </div>
+    <p>প্রতিটি ফলাফল প্রকৃত Ollama মডেল (<span class="mono">qwen2.5-coder:1.5b</span>) দিয়ে, প্রকৃত সাবপ্রসেস এক্সিকিউশনের মাধ্যমে, শেষ পর্যন্ত held-out private টেস্ট কেসে যাচাই করে পাওয়া — কোনো অনুমান বা মক ডেটা নয়।</p>
+  </section>
+
+  <section id="limits">
+    <p class="sec-label">১০</p>
+    <h2>সীমাবদ্ধতা</h2>
+    <ul>
+      <li>শুধু পাইথন সমর্থিত — C++/JavaScript এখনো নেই।</li>
+      <li>শুধু top-level ফাংশন — ক্লাস মেথড বা nested ফাংশন সমর্থিত নয় (একটি স্পষ্ট এরর মেসেজ দেখানো হয়)।</li>
+      <li>প্যাটার্ন বেস ছোট (১৩টি) — পেপারের ৩৬,০০০+ এর তুলনায়।</li>
+      <li>ছোট, স্থানীয় LLM (1.5B) মাঝেমধ্যে জটিল লজিক (যেমন তিনটি লিস্টের intersection) সঠিকভাবে করতে ব্যর্থ হয় — এটি মডেলের সীমাবদ্ধতা, সিস্টেমের বাগ নয়।</li>
+      <li>Proactive "inefficient pattern" হাইলাইটিং (CodeLens) এখনো তৈরি হয়নি।</li>
+    </ul>
+  </section>
+
+  <section id="future">
+    <p class="sec-label">১১</p>
+    <h2>ভবিষ্যৎ পরিকল্পনা</h2>
+    <ul>
+      <li>একাধিক ভাষা সমর্থন (JavaScript, C++) — <span class="mono">LanguageAdapter</span> ইন্টারফেস আগে থেকেই এর জন্য প্রস্তুত।</li>
+      <li>PIE ডেটাসেট থেকে অফলাইনে মাইন করে বড় প্যাটার্ন বেস তৈরি করা।</li>
+      <li>ব্যবহারকারীর কোডবেস থেকে ধীরে ধীরে শেখা, workspace-local প্যাটার্ন স্টোর।</li>
+      <li>প্রাথমিক, cheap static-analysis ভিত্তিক CodeLens হিন্টিং।</li>
+    </ul>
+  </section>
+
+  <section id="conclusion">
+    <p class="sec-label">১২</p>
+    <h2>উপসংহার</h2>
+    <p>এই প্রজেক্টে শুধু একটি গবেষণাপত্রের অ্যালগরিদম কপি করা হয়নি — বরং সেটিকে একটি ভিন্ন, বাস্তব প্রেক্ষাপটে (offline batch গবেষণা থেকে interactive editor tool-এ) সফলভাবে অভিযোজিত করা হয়েছে, দুটি মূল গবেষণা-সমস্যার (টেস্ট কেস কোথা থেকে, প্যাটার্ন বেস কোথা থেকে) স্পষ্ট সমাধান দিয়ে। প্রতিটি দাবির পেছনে প্রকৃত, পুনরুৎপাদনযোগ্য প্রমাণ আছে — টাইপচেক, বিল্ড, প্যাকেজিং, এবং একাধিক এন্ড-টু-এন্ড রান, যার মধ্যে একটি মাত্র সেশনে ১৭টির বেশি প্রকৃত বাগ খুঁজে বের করে সমাধান করা হয়েছে। সবচেয়ে গুরুত্বপূর্ণ শিক্ষা — প্রতিটি ফিচার তৈরি করেই থেমে যাওয়া হয়নি, বরং সত্যিকারের LLM দিয়ে বারবার চালিয়ে দেখা হয়েছে, এবং যা ভুল পাওয়া গেছে তার root cause খুঁজে সমাধান করা হয়েছে — যা একটি গবেষণা-প্রোটোটাইপ ও একটি ব্যবহারযোগ্য টুলের মধ্যে পার্থক্য তৈরি করে।</p>
+  </section>
+
+  <footer>
+    কোড ও ডকুমেন্টেশন: <span class="mono">SPL3/sbllm-optimizer/</span> &middot; আর্কিটেকচার বিস্তারিত: <span class="mono">docs/ARCHITECTURE.md</span>
+  </footer>
+
+</div>

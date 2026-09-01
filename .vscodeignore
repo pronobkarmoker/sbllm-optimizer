@@ -1,0 +1,17 @@
+.env
+.env.example
+.gitignore
+.vscodeignore
+
+src/**
+scripts/**
+docs/**
+
+esbuild.mjs
+tsconfig.json
+
+**/*.map
+**/.DS_Store
+
+node_modules/**
+*.vsix

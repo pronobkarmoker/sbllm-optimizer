@@ -1,0 +1,113 @@
+{
+  "name": "sbllm-optimizer",
+  "displayName": "SBLLM Optimizer",
+  "description": "Search-based LLM code optimization — iteratively refines selected code using execution feedback and evolutionary search.",
+  "version": "0.1.0",
+  "publisher": "sbllm-optimizer-dev",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true,
+      "description": "Commands and the insights panel work in any workspace. Actually running your code (and AI-generated variants of it) to measure performance requires a trusted workspace, and you'll be prompted to trust it at that point."
+    }
+  },
+  "main": "./dist/extension.cjs",
+  "type": "module",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sbllmOptimizer.optimizeSelection",
+        "title": "SBLLM: Optimize Selected Code",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "sbllmOptimizer.setGeminiApiKey",
+        "title": "SBLLM: Set Gemini API Key"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sbllmOptimizer.optimizeSelection",
+          "when": "editorLangId == python && editorHasSelection",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SBLLM Optimizer",
+      "properties": {
+        "sbllmOptimizer.llmProvider": {
+          "type": "string",
+          "enum": [
+            "ollama",
+            "gemini"
+          ],
+          "default": "ollama",
+          "description": "Which LLM backend to use. Ollama runs fully local and free; Gemini needs an API key set via \"SBLLM: Set Gemini API Key\"."
+        },
+        "sbllmOptimizer.ollamaHost": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Base URL of a locally running Ollama server."
+        },
+        "sbllmOptimizer.ollamaModel": {
+          "type": "string",
+          "default": "qwen2.5-coder:1.5b",
+          "description": "Ollama model tag to use for optimization."
+        },
+        "sbllmOptimizer.geminiModel": {
+          "type": "string",
+          "default": "gemini-3.6-flash",
+          "description": "Gemini model to use for optimization."
+        },
+        "sbllmOptimizer.maxIterations": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Maximum evolutionary search iterations per optimize/refine run. Defaults to the paper's own tuned optimum."
+        },
+        "sbllmOptimizer.representativeSamples": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 5,
+          "description": "Number of representative candidates (Ns) shown to the model each iteration. Defaults to the paper's own tuned optimum."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "smoke-test": "tsx src/cli/smoke-test.ts",
+    "optimize": "tsx src/cli/optimize.ts",
+    "typecheck": "tsc --noEmit",
+    "compile": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "vscode:prepublish": "npm run compile",
+    "package:vsix": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce package --no-dependencies",
+    "publish:marketplace": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce publish --no-dependencies"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.32.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
