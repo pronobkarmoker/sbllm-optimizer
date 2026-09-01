@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Documentation only. Expanded the author section so each role and organisation renders on its own line — Markdown collapses single newlines, so the previous version ran them together into one paragraph.
+
 ## 0.2.0
 
 Fidelity and correctness work, from a component-by-component audit against the paper.
