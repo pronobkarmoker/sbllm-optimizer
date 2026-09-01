@@ -69,4 +69,27 @@ jobs:
 
       - name: Publish to Open VSX
         if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
-        run: npx ovsx publish *.vsix
+        run: |
+          set -euo pipefail
+          ls -la *.vsix
+          VSIX="$(ls *.vsix | head -n1)"
+          echo "Publishing: $VSIX"
+          npx ovsx publish "$VSIX" -p "$OVSX_PAT"
+
+      # A previous run had every step green while nothing actually reached the registry — the
+      # publish command exited 0 without publishing. Trusting the exit code alone hid that, so
+      # the outcome is now asserted against the registry API rather than inferred.
+      - name: Verify it actually published
+        if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            if curl -sf "https://open-vsx.org/api/sbllm-optimizer-dev/sbllm-optimizer" | grep -q '"version"'; then
+              echo "Confirmed live on Open VSX."
+              exit 0
+            fi
+            echo "Not indexed yet (attempt $i/10), waiting..."
+            sleep 15
+          done
+          echo "::error::Publish reported success but the extension is not present on Open VSX."
+          exit 1
