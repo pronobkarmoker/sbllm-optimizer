@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "sbllm-optimizer-dev",
   "private": true,
+  "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.85.0",
@@ -96,7 +97,8 @@
     "watch": "node esbuild.mjs --watch",
     "vscode:prepublish": "npm run compile",
     "package:vsix": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce package --no-dependencies",
-    "publish:marketplace": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce publish --no-dependencies"
+    "publish:marketplace": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce publish --no-dependencies",
+    "publish:openvsx": "npm run compile && ovsx publish --no-dependencies"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -107,6 +109,7 @@
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.24.0",
+    "ovsx": "^1.1.1",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
