@@ -16,6 +16,12 @@ export interface OptimizerOptions {
   ns?: number;
   /** Defaults to 4, same reasoning — the paper's own tuned optimum, not an arbitrary retuning. */
   maxIterations?: number;
+  /** Candidates sampled per iteration (the paper's `generation_number`; run.sh uses 4). Lowering
+   *  it to 1 makes a run ~4x faster but degrades the search into a linear chain — the pool never
+   *  grows past Ns, so representative selection has nothing to choose between and crossover has no
+   *  distinct methods to combine. Exposed as a setting because a slow local model makes the
+   *  paper-faithful default genuinely expensive in an interactive editor. */
+  generationNumber?: number;
   onProgress?: (msg: string) => void;
   signal?: AbortSignal;
   /** Everything the target function depends on but doesn't define itself — imports, module-level
@@ -104,6 +110,7 @@ export class EvolutionaryOptimizer {
   private async runIterationsAndFinalize(opts: OptimizerOptions): Promise<OptimizerResult> {
     const ns = opts.ns ?? 3;
     const maxIterations = opts.maxIterations ?? 4;
+    const generationNumber = opts.generationNumber ?? 4;
     const log = opts.onProgress ?? (() => {});
     const oracle = this.oracle!;
 
@@ -129,23 +136,36 @@ export class EvolutionaryOptimizer {
       );
       const prompt = buildIterationPrompt(this.slowCode, representative, retrieved, this.contextPrefix);
 
-      log(`Iteration ${iter}: generating from ${representative.length} representative sample(s)...`);
-      const response = await this.llm.generate(prompt, { signal: opts.signal });
-
-      let parsed: ReturnType<typeof parseGoCotResponse>;
-      try {
-        parsed = parseGoCotResponse(response.text);
-      } catch {
-        log(`Iteration ${iter}: model response was not parseable, skipping.`);
-        continue;
-      }
-
-      const candidateFitness = await oracle.evaluatePublic(parsed.code);
-      this.pool.push({ code: parsed.code, explanation: explanationOf(parsed), ...candidateFitness });
       log(
-        `Iteration ${iter}: acc=${candidateFitness.acc.toFixed(2)} speedup=${candidateFitness.speedup.toFixed(2)}x` +
-          (candidateFitness.error ? ` error=${candidateFitness.error}` : ''),
+        `Iteration ${iter}: generating ${generationNumber} candidate(s) from ${representative.length} representative sample(s)...`,
       );
+
+      // The paper generates MULTIPLE candidates per iteration (run.sh: generation_number=4), not
+      // one. That breadth is what makes the search evolutionary rather than a linear chain: the
+      // pool needs more members than Ns for representative selection to actually have anything to
+      // choose between, and it's what gives crossover distinct methods to combine. Sampling at
+      // temperature 0.7 (the paper's setting) is what makes repeated calls on the same prompt
+      // diverge.
+      for (let g = 0; g < generationNumber; g++) {
+        if (opts.signal?.aborted) break;
+
+        const response = await this.llm.generate(prompt, { signal: opts.signal });
+
+        let parsed: ReturnType<typeof parseGoCotResponse>;
+        try {
+          parsed = parseGoCotResponse(response.text);
+        } catch {
+          log(`Iteration ${iter}.${g + 1}: model response was not parseable, skipping.`);
+          continue;
+        }
+
+        const candidateFitness = await oracle.evaluatePublic(parsed.code);
+        this.pool.push({ code: parsed.code, explanation: explanationOf(parsed), ...candidateFitness });
+        log(
+          `Iteration ${iter}.${g + 1}: acc=${candidateFitness.acc.toFixed(2)} speedup=${candidateFitness.speedup.toFixed(2)}x` +
+            (candidateFitness.error ? ` error=${candidateFitness.error}` : ''),
+        );
+      }
     }
 
     const ranked = await this.fitness.selectRepresentative(this.pool, this.pool.length);

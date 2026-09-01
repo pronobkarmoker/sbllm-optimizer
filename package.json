@@ -103,6 +103,13 @@
           "maximum": 6,
           "description": "Maximum evolutionary search iterations per optimize/refine run. Defaults to the paper's own tuned optimum."
         },
+        "sbllmOptimizer.generationNumber": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Candidates sampled per iteration (the paper's generation_number). The paper uses 4; lowering to 1 is ~4x faster but weakens the search, since the candidate pool never grows enough for representative selection to choose between distinct methods."
+        },
         "sbllmOptimizer.representativeSamples": {
           "type": "number",
           "default": 3,

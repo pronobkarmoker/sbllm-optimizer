@@ -99,6 +99,7 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
   const cfg = vscode.workspace.getConfiguration('sbllmOptimizer');
   const ns = cfg.get<number>('representativeSamples', 3);
   const maxIterations = cfg.get<number>('maxIterations', 4);
+  const generationNumber = cfg.get<number>('generationNumber', 4);
 
   const panel = OptimizationPanel.createOrShow();
   let latestResult: OptimizerResult | null = null;
@@ -110,7 +111,7 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
     onRefine: () => {
       void runWithProgress(panel, 'SBLLM: refining further', async (onProgress, signal) => {
         panel.showRefining();
-        const result = await optimizer.refineFurther({ ns, maxIterations, onProgress, signal });
+        const result = await optimizer.refineFurther({ ns, maxIterations, generationNumber, onProgress, signal });
         latestResult = result;
         panel.showResult(result);
         await showDiffForCandidate(slowCode, result.best, 'Best (refined)');
@@ -126,7 +127,7 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
   panel.reset(slowCode);
 
   await runWithProgress(panel, 'SBLLM: optimizing selected code', async (onProgress, signal) => {
-    const result = await optimizer.optimize(slowCode, { ns, maxIterations, onProgress, signal, contextPrefix });
+    const result = await optimizer.optimize(slowCode, { ns, maxIterations, generationNumber, onProgress, signal, contextPrefix });
     latestResult = result;
     panel.showResult(result);
     await showDiffForCandidate(slowCode, result.best, 'Best');

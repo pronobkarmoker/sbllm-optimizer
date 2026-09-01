@@ -2,46 +2,33 @@ import type { PythonAdapter } from '../lang/pythonAdapter.js';
 import type { Candidate } from './types.js';
 
 /**
- * Ports Algorithm 1's "Execution-based Representative Sample Selection" (paper §II-B / Alg. 1
- * lines 2-19), matching the reference implementation's `selection()` in merge.py
- * (sbllm/sbllm/merge.py:325-369) bucket-for-bucket:
+ * Ports Algorithm 1's "Execution-based Representative Sample Selection" (paper §III, Alg. 1),
+ * following the PAPER's pseudocode, which in one place disagrees with the authors' released code:
  *
- * - "Correct" is `acc > 0`, NOT `acc === 1` — a candidate that passes most but not all test cases
- *   is still real signal (merge.py: `if obj['acc'] is not None and obj['acc']>0`). An earlier
- *   version of this code required `acc === 1` to enter this bucket at all, which meant a
- *   nearly-correct, genuinely fast candidate got dumped in with total failures and only ever
- *   surfaced via distance-based padding — discarding exactly the "almost there" signal GO-COT's
- *   crossover step is designed to build on. The *label* shown to the model in the prompt (correct
- *   vs incorrect attempt, in goCotPromptBuilder.ts) still keys strictly off `acc === 1`, matching
- *   evol_query.py's `prompt_construction()` (sbllm/sbllm/evol_query.py:112-117) — these are two
- *   separate concerns in the paper's own code and must not be collapsed into one.
- * - Within that bucket, candidates are ranked by the paper's own combined speed+accuracy score,
- *   `(time/input_time) / (0.01 + acc)` ascending (smaller = faster AND more correct = better) —
- *   not a simple speedup sort — then deduped by AST abstraction so three near-identical correct
- *   attempts don't crowd out three genuinely distinct optimization methods (the exact mechanism
- *   the reference-repo bug we fixed earlier broke for Python).
- * - If fewer than `n` candidates survive that, the pool is padded from the remaining acc===0
- *   candidates, ordered by ascending total abstracted edit-distance to the rest of that pool —
- *   i.e. the candidates most representative of the pool's common mistakes come first. This is NOT
- *   a distinctness ranking despite how it reads; it mirrors merge.py's `closest_segments` naming
- *   literally — an ascending sort by sum-of-distances-to-others picks the most mutually-similar
- *   candidates first, not the most distinct ones.
+ * - Candidates are sorted by speedup, descending ("sort the code snippets by speedup rate").
+ * - "Correct" means `acc === 1` EXACTLY. Algorithm 1 states this literally:
+ *     `if e.acc == 1 and Abstract(e.code) not in correct_list`
+ *   The released implementation instead buckets on `acc > 0` (merge.py:329), admitting partially
+ *   passing candidates into the correct group. That is a real divergence between the paper and its
+ *   own artifact, and this code follows the paper. Note the two rules coincide whenever the correct
+ *   group is all-`acc==1` anyway: merge.py's ranking key `(time/input_time)/(0.01+acc)` reduces to
+ *   `(time/input_time)/1.01` there, whose ascending order is exactly speedup-descending.
+ * - Correct candidates are deduped by AST abstraction, so three near-identical correct attempts
+ *   don't crowd out three genuinely distinct optimization methods (the exact mechanism the
+ *   reference-repo bug fixed earlier broke for Python).
+ * - If fewer than `n` survive, the pool is padded from the incorrect ones, sorted by ascending sum
+ *   of abstracted edit distances — Algorithm 1: `incorrect_list = sort(incorrect_list, key=dis,
+ *   order=ascend)`. Despite reading like a distinctness ranking, ascending sum-of-distances picks
+ *   the most mutually SIMILAR candidates first (the released code names these `closest_segments`),
+ *   i.e. the mistakes most representative of the pool. Paper and released code agree here.
  */
 export class FitnessEvaluator {
   constructor(private readonly adapter: PythonAdapter) {}
 
   async selectRepresentative(candidates: Candidate[], n: number): Promise<Candidate[]> {
-    const correctPool = candidates.filter((c) => (c.acc ?? 0) > 0);
-    const wrongPool = candidates.filter((c) => (c.acc ?? 0) <= 0);
-
-    const ranked = correctPool
-      .map((c) => {
-        const speedup = c.speedup ?? 1;
-        const timeRatio = speedup > 0 ? 1 / speedup : 1;
-        return { c, key: timeRatio / (0.01 + (c.acc ?? 0)) };
-      })
-      .sort((a, b) => a.key - b.key)
-      .map((x) => x.c);
+    const sorted = [...candidates].sort((a, b) => (b.speedup ?? 1) - (a.speedup ?? 1));
+    const ranked = sorted.filter((c) => c.acc === 1);
+    const wrongPool = sorted.filter((c) => c.acc !== 1);
 
     const selected: Candidate[] = [];
     const seenAbstractions: string[] = [];
