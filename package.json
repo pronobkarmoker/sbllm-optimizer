@@ -7,6 +7,14 @@
   "private": true,
   "icon": "media/icon.png",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pronobkarmoker/sbllm-optimizer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pronobkarmoker/sbllm-optimizer/issues"
+  },
+  "homepage": "https://github.com/pronobkarmoker/sbllm-optimizer#readme",
   "engines": {
     "vscode": "^1.85.0",
     "node": ">=18"

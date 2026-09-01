@@ -50,7 +50,7 @@ The paper's benchmark dataset (PIE) ships with pre-built test cases and a large 
 1. **No test cases exist for arbitrary code** — solved with a *differential test oracle*: an LLM call synthesizes diverse inputs, the original function runs once as ground truth, and every candidate is checked against it (return value and stdout), split into public/private sets to guard against overfitting during the search.
 2. **No training corpus exists at inference time** — solved with a small, curated pattern base (instead of PIE's 36K+ mined pairs) using the same similarity-based retrieval mechanism, scoped down for what an editor extension can reasonably ship.
 
-Full design rationale is in `docs/ARCHITECTURE.md` in this repository.
+Full design rationale is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Requirements
 
@@ -64,7 +64,7 @@ Full design rationale is in `docs/ARCHITECTURE.md` in this repository.
 ## Getting started
 
 ```sh
-git clone <this-repo>
+git clone https://github.com/pronobkarmoker/sbllm-optimizer.git
 cd sbllm-optimizer
 npm install
 ```
@@ -146,4 +146,4 @@ npm run optimize        # run the core search loop from the CLI, no VS Code need
 
 ## License
 
-MIT — see the LICENSE file in this repository.
+[MIT](LICENSE)
