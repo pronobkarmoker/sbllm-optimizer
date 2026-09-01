@@ -1,0 +1,60 @@
+name: Publish Extension
+
+# Publishes on a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`), or on demand
+# from the Actions tab. Runs on Node 20 specifically because `ovsx` requires >=20 — this is the
+# reason the workflow exists at all: it decouples publishing from whatever Node version happens
+# to be installed locally.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Which registry to publish to
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - marketplace
+          - openvsx
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build and package
+        run: npx vsce package --no-dependencies
+
+      # Keeps the .vsix downloadable from the workflow run even if a publish step fails,
+      # so a bad token never means rebuilding from scratch.
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vsix
+          path: '*.vsix'
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'marketplace' }}
+        run: npx vsce publish --no-dependencies --packagePath *.vsix
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX
+        if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx' }}
+        run: npx ovsx publish *.vsix
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
