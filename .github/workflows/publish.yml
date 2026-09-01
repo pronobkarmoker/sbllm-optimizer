@@ -70,11 +70,20 @@ jobs:
       - name: Publish to Open VSX
         if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
         run: |
-          set -euo pipefail
           ls -la *.vsix
           VSIX="$(ls *.vsix | head -n1)"
           echo "Publishing: $VSIX"
-          npx ovsx publish "$VSIX" -p "$OVSX_PAT"
+          set +e
+          OUT="$(npx ovsx publish "$VSIX" -p "$OVSX_PAT" 2>&1)"
+          CODE=$?
+          echo "$OUT"
+          if [ $CODE -ne 0 ]; then
+            # Surfaced as an annotation, not just a log line: workflow logs need admin auth to
+            # read, but annotations are public for a public repo — so the actual failure reason
+            # is retrievable without handing anyone a GitHub token.
+            echo "::error::ovsx exit $CODE :: $(echo "$OUT" | tr '\n' ' | ' | tail -c 900)"
+          fi
+          exit $CODE
 
       # A previous run had every step green while nothing actually reached the registry — the
       # publish command exited 0 without publishing. Trusting the exit code alone hid that, so
