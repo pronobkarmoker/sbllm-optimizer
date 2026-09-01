@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { LLMProvider } from '../core/llm/llmProvider.js';
 import { GeminiProvider } from '../core/llm/geminiProvider.js';
@@ -39,10 +40,16 @@ async function main() {
   const provider = buildProvider();
   const optimizer = new EvolutionaryOptimizer(provider, { scriptsDir: SCRIPTS_DIR });
 
-  console.log(`Using provider: ${provider.id}`);
-  console.log('Slow code:\n' + EXAMPLE_SLOW_CODE);
+  // Optional file argument: `npm run optimize -- examples/has_duplicate.py`. Falls back to the
+  // built-in example so the bare `npm run optimize` still works.
+  const fileArg = process.argv[2];
+  const slowCode = fileArg ? readFileSync(fileArg, 'utf8') : EXAMPLE_SLOW_CODE;
 
-  const result = await optimizer.optimize(EXAMPLE_SLOW_CODE, {
+  console.log(`Using provider: ${provider.id}`);
+  if (fileArg) console.log(`Source: ${fileArg}`);
+  console.log('Slow code:\n' + slowCode);
+
+  const result = await optimizer.optimize(slowCode, {
     ns: 3,
     maxIterations: 4,
     onProgress: (msg) => console.log('[optimizer] ' + msg),
