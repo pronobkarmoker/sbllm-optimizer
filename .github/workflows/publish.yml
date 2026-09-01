@@ -85,20 +85,26 @@ jobs:
           fi
           exit $CODE
 
-      # A previous run had every step green while nothing actually reached the registry — the
-      # publish command exited 0 without publishing. Trusting the exit code alone hid that, so
-      # the outcome is now asserted against the registry API rather than inferred.
+      # Asserts the outcome against the registry rather than trusting the publish step's exit code.
+      # Checks THIS version specifically: an earlier version of this step only looked for any
+      # "version" field, which would pass on a stale listing even if the new version never landed.
+      # Open VSX indexes asynchronously and has taken ~2 minutes in practice, hence the retries —
+      # an immediate 404 or stale version means "not indexed yet", not "failed".
       - name: Verify it actually published
         if: ${{ env.OVSX_PAT != '' && (github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'openvsx') }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 10); do
-            if curl -sf "https://open-vsx.org/api/sbllm-optimizer-dev/sbllm-optimizer" | grep -q '"version"'; then
-              echo "Confirmed live on Open VSX."
+          WANT="$(node -p "require('./package.json').version")"
+          echo "Expecting version $WANT on Open VSX"
+          for i in $(seq 1 20); do
+            GOT="$(curl -sf "https://open-vsx.org/api/sbllm-optimizer-dev/sbllm-optimizer" \
+                   | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version || ''" 2>/dev/null || echo '')"
+            if [ "$GOT" = "$WANT" ]; then
+              echo "Confirmed: $WANT is live on Open VSX."
               exit 0
             fi
-            echo "Not indexed yet (attempt $i/10), waiting..."
+            echo "Registry reports '${GOT:-none}' (attempt $i/20), waiting for indexing..."
             sleep 15
           done
-          echo "::error::Publish reported success but the extension is not present on Open VSX."
+          echo "::error::Published $WANT but the registry never reported it (last saw '${GOT:-none}')."
           exit 1
