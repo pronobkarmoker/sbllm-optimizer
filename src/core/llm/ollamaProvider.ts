@@ -50,19 +50,36 @@ export class OllamaProvider implements LLMProvider {
       options: { temperature: opts.temperature ?? 0.7 },
     });
 
-    const raw = await this.post('/api/chat', body, opts.signal);
+    const { raw, status, headers } = await this.post('/api/chat', body, opts.signal);
+
+    // An empty 200 is not something Ollama produces, so it means something between us and it
+    // interfered — in practice, the VS Code extension host's proxy layer. Say that plainly instead
+    // of reporting an unhelpful parse failure against an empty string.
+    if (raw.trim() === '') {
+      throw new Error(
+        `Ollama returned an empty response (HTTP ${status}${
+          headers['content-length'] !== undefined ? `, content-length: ${headers['content-length']}` : ''
+        }). This usually means a proxy intercepted the request. In VS Code settings, set ` +
+          '"http.proxySupport" to "off", or add "127.0.0.1" to "http.noProxy", then reload the window.',
+      );
+    }
+
     let data: OllamaChatResponse;
     try {
       data = JSON.parse(raw) as OllamaChatResponse;
     } catch {
-      throw new Error(`Ollama returned a non-JSON response: ${raw.slice(0, 200)}`);
+      throw new Error(`Ollama returned a non-JSON response (HTTP ${status}): ${raw.slice(0, 200)}`);
     }
     if (data.error) throw new Error(`Ollama error: ${data.error}`);
 
     return { text: data.message?.content ?? '', raw: data };
   }
 
-  private post(pathname: string, body: string, signal?: AbortSignal): Promise<string> {
+  private post(
+    pathname: string,
+    body: string,
+    signal?: AbortSignal,
+  ): Promise<{ raw: string; status: number; headers: Record<string, string | string[] | undefined> }> {
     return new Promise((resolve, reject) => {
       let url: URL;
       try {
@@ -82,7 +99,11 @@ export class OllamaProvider implements LLMProvider {
           headers: {
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(body),
+            Accept: 'application/json',
           },
+          // Bypass any proxy agent the host may have installed globally. The extension host patches
+          // Node networking for proxy support, and a localhost request must not be routed through it.
+          agent: false,
         },
         (res) => {
           let out = '';
@@ -92,7 +113,7 @@ export class OllamaProvider implements LLMProvider {
             if ((res.statusCode ?? 0) >= 400) {
               reject(new Error(`Ollama request failed: ${res.statusCode} ${res.statusMessage} — ${out.slice(0, 300)}`));
             } else {
-              resolve(out);
+              resolve({ raw: out, status: res.statusCode ?? 0, headers: res.headers });
             }
           });
         },
