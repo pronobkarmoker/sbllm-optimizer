@@ -1,4 +1,5 @@
 import { loadPatternBase, type Pattern } from './patternBase.js';
+import type { LanguageId } from '../lang/languageAdapter.js';
 
 export interface RetrievedPatterns {
   similar: Pattern | null;
@@ -14,6 +15,11 @@ const STOPWORDS = new Set([
   'as', 'class', 'try', 'except', 'finally', 'with', 'lambda', 'pass', 'break', 'continue', 'is',
   'none', 'true', 'false', 'print', 'the', 'a', 'an', 'that', 'this', 'to', 'of', 'than', 'are',
   'be', 'it', 'its', 'when', 'only', 'due', 'by', 'up', 'each', 'other', 'same', 'one', 'into',
+  // C++ keywords and ubiquitous std names — same reasoning as the Python entries above: they
+  // appear in nearly every snippet, so they add intersection without adding signal.
+  'int', 'long', 'short', 'char', 'bool', 'float', 'double', 'void', 'unsigned', 'signed',
+  'const', 'static', 'auto', 'struct', 'std', 'size_t', 'nullptr', 'using', 'namespace',
+  'include', 'template', 'typename', 'switch', 'case', 'new', 'delete', 'sizeof', 'begin', 'end',
 ]);
 
 function tokenize(text: string): Set<string> {
@@ -55,7 +61,7 @@ function weightedScore(queryTokens: Set<string>, tagTokens: Set<string>, bodyTok
 export class PatternRetriever {
   private readonly patterns: Pattern[];
 
-  constructor(lang: 'python') {
+  constructor(lang: LanguageId) {
     this.patterns = loadPatternBase(lang);
   }
 

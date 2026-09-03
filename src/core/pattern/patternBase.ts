@@ -1,4 +1,6 @@
 import { pythonPatterns } from './data/pythonPatterns.js';
+import { cppPatterns } from './data/cppPatterns.js';
+import type { LanguageId } from '../lang/languageAdapter.js';
 
 export interface Pattern {
   id: string;
@@ -13,7 +15,8 @@ export interface Pattern {
  * classic optimization idioms, standing in for the PIE-mined corpus the paper uses. Phase 3 swaps
  * the data module this reads for offline-mined PIE patterns without touching callers.
  */
-export function loadPatternBase(lang: 'python'): Pattern[] {
+export function loadPatternBase(lang: LanguageId): Pattern[] {
   if (lang === 'python') return pythonPatterns;
+  if (lang === 'cpp') return cppPatterns;
   throw new Error(`No pattern base available for language: ${lang}`);
 }

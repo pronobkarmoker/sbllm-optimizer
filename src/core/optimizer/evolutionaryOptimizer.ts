@@ -1,5 +1,7 @@
 import type { LLMProvider } from '../llm/llmProvider.js';
 import { PythonAdapter } from '../lang/pythonAdapter.js';
+import { CppAdapter } from '../lang/cppAdapter.js';
+import type { LanguageAdapter, LanguageId } from '../lang/languageAdapter.js';
 import { DifferentialTestOracle } from '../fitness/testOracle/differential.js';
 import { FitnessEvaluator } from '../fitness/fitnessEvaluator.js';
 import { PatternRetriever } from '../pattern/patternRetriever.js';
@@ -50,9 +52,10 @@ function explanationOf(parsed: { analysis: string; opportunities: string; explan
  * so clicking it doesn't re-synthesize test inputs or throw away what's already been learned.
  */
 export class EvolutionaryOptimizer {
-  private readonly adapter: PythonAdapter;
+  private readonly adapter: LanguageAdapter;
   private readonly fitness: FitnessEvaluator;
-  private readonly patterns = new PatternRetriever('python');
+  private readonly patterns: PatternRetriever;
+  private readonly language: LanguageId;
 
   private slowCode = '';
   private contextPrefix = '';
@@ -62,10 +65,14 @@ export class EvolutionaryOptimizer {
 
   constructor(
     private readonly llm: LLMProvider,
-    opts: { scriptsDir: string },
+    opts: { scriptsDir: string; language?: LanguageId },
   ) {
-    this.adapter = new PythonAdapter(opts.scriptsDir);
+    // The paper covers Python and C++ (986 and 994 test samples respectively); everything below
+    // this line is language-independent and talks only to the LanguageAdapter interface.
+    this.language = opts.language ?? 'python';
+    this.adapter = this.language === 'cpp' ? new CppAdapter() : new PythonAdapter(opts.scriptsDir);
     this.fitness = new FitnessEvaluator(this.adapter);
+    this.patterns = new PatternRetriever(this.language);
   }
 
   async optimize(slowCode: string, opts: OptimizerOptions = {}): Promise<OptimizerResult> {
@@ -78,7 +85,7 @@ export class EvolutionaryOptimizer {
     log(`Oracle ready: ${oracle.publicCount} public / ${oracle.privateCount} private test case(s).`);
 
     log('Generating seed candidate (no history yet)...');
-    const seedResponse = await this.llm.generate(buildInitialPrompt(slowCode, contextPrefix), { signal: opts.signal });
+    const seedResponse = await this.llm.generate(buildInitialPrompt(this.language, slowCode, contextPrefix), { signal: opts.signal });
     const seedParsed = parseGoCotResponse(seedResponse.text);
     const seedFitness = await oracle.evaluatePublic(seedParsed.code);
     log(
@@ -134,7 +141,7 @@ export class EvolutionaryOptimizer {
         this.slowCode,
         representative.map((c) => c.code),
       );
-      const prompt = buildIterationPrompt(this.slowCode, representative, retrieved, this.contextPrefix);
+      const prompt = buildIterationPrompt(this.language, this.slowCode, representative, retrieved, this.contextPrefix);
 
       log(
         `Iteration ${iter}: generating ${generationNumber} candidate(s) from ${representative.length} representative sample(s)...`,

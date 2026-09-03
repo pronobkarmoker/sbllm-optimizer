@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import type { LanguageAdapter } from './languageAdapter.js';
 
 const PYTHON_BIN = process.env.PYTHON_BIN ?? 'python';
 
@@ -31,8 +32,8 @@ export interface RunBatchResult {
  * the bundled VS Code extension resolves it from `context.extensionPath` after esbuild has bundled
  * everything into one file (where a `__dirname`/`import.meta.url`-based guess would silently break).
  */
-export class PythonAdapter {
-  readonly id = 'python';
+export class PythonAdapter implements LanguageAdapter {
+  readonly id = 'python' as const;
 
   constructor(private readonly scriptsDir: string) {}
 

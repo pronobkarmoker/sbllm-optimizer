@@ -1,5 +1,6 @@
 import type { LLMProvider } from '../../llm/llmProvider.js';
-import type { PythonAdapter } from '../../lang/pythonAdapter.js';
+import type { LanguageAdapter } from '../../lang/languageAdapter.js';
+import { LANGUAGE_META } from '../../lang/languageAdapter.js';
 import { deepAlmostEqual } from '../../util/deepAlmostEqual.js';
 import { extractJson } from '../../util/json.js';
 
@@ -37,7 +38,7 @@ export class DifferentialTestOracle {
 
   private constructor(
     private readonly llm: LLMProvider,
-    private readonly adapter: PythonAdapter,
+    private readonly adapter: LanguageAdapter,
     private readonly funcName: string,
     /** Everything the target function needs but doesn't define itself — imports, module-level
      *  constants, earlier helper functions — prepended before every execution so functions that
@@ -48,13 +49,17 @@ export class DifferentialTestOracle {
 
   static async build(
     llm: LLMProvider,
-    adapter: PythonAdapter,
+    adapter: LanguageAdapter,
     slowCode: string,
     opts: { numInputs?: number; contextPrefix?: string } = {},
   ): Promise<DifferentialTestOracle> {
     const funcName = adapter.extractFunctionName(slowCode);
     if (!funcName) {
-      throw new Error('Could not find a top-level `def name(...)` in the provided code.');
+      throw new Error(
+        adapter.id === 'python'
+          ? 'Could not find a top-level `def name(...)` in the provided code.'
+          : 'Could not find a supported top-level function definition in the provided C++ code.',
+      );
     }
 
     const oracle = new DifferentialTestOracle(llm, adapter, funcName, opts.contextPrefix ?? '');
@@ -125,19 +130,20 @@ export class DifferentialTestOracle {
       return [[]];
     }
 
+    const lang = LANGUAGE_META[this.adapter.id];
     const example =
       paramNames && paramNames.length === 1
-        ? `Example: for a function \`def f(${paramNames[0]}):\` called as f([1, 2, 3]), the entry is [[1, 2, 3]] — ` +
+        ? `Example: for a function taking one parameter \`${paramNames[0]}\` called with the list [1, 2, 3], the entry is [[1, 2, 3]] — ` +
           `an array of ONE positional argument, whose value happens to be the list [1, 2, 3]. Do NOT write [1, 2, 3] ` +
           `directly as the entry — that would be read as three separate arguments.`
-        : `Example: for a function \`def f(a, b):\` called as f(1, 2), the entry is [1, 2].`;
+        : `Example: for a function taking two parameters called with (1, 2), the entry is [1, 2].`;
 
     const response = await this.llm.generate(
       {
-        system: 'You generate test inputs for Python functions. Reply with strict JSON only, no markdown, no commentary.',
+        system: `You generate test inputs for ${lang.label} functions. Reply with strict JSON only, no markdown, no commentary.`,
         user: [
-          'Given this Python function:',
-          '```python',
+          `Given this ${lang.label} function:`,
+          '```' + lang.fence,
           slowCode,
           '```',
           '',
@@ -145,14 +151,13 @@ export class DifferentialTestOracle {
           '(empty/zero/negative/large values where sensible for the inferred parameter types).',
           '',
           'IMPORTANT — inputs must represent how this function is actually MEANT to be called, not',
-          'every exotic value Python would technically permit. Specifically:',
+          `every exotic value ${lang.label} would technically permit. Specifically:`,
           '- Infer the intended element type from the code and stay consistent with it. If it',
           '  compares or sums elements, use plain numbers; if it concatenates them, use strings.',
-          '- Do NOT nest containers (no lists of lists, no dicts inside lists) unless the code',
-          '  clearly indexes two levels deep or otherwise requires it.',
+          '- Do NOT nest containers (no lists of lists) unless the signature clearly calls for it.',
           '- Do NOT mix incompatible element types in one collection (no [1, "a", None] unless the',
           '  code explicitly handles mixed types).',
-          'Inputs that are valid Python but outside the intended contract make correct optimizations',
+          `Inputs that are valid ${lang.label} but outside the intended contract make correct optimizations`,
           'look wrong (e.g. an unhashable list element rules out any set-based rewrite), which is',
           'worse than useless here.',
           '',

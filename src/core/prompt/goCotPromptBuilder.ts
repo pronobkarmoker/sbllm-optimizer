@@ -2,6 +2,7 @@ import type { Prompt } from '../llm/llmProvider.js';
 import type { Candidate } from '../fitness/types.js';
 import type { RetrievedPatterns } from '../pattern/patternRetriever.js';
 import { extractJson } from '../util/json.js';
+import { LANGUAGE_META, type LanguageId } from '../lang/languageAdapter.js';
 
 export interface GoCotResponse {
   analysis: string;
@@ -15,8 +16,10 @@ export interface GoCotResponse {
  * instead of the reference repo's regex/`.count()==1` markdown scraping (the exact class of bug
  * we fixed in merge.py's extract_py/extract_cpp — this design avoids it by construction).
  */
-const SYSTEM = [
-  'You are a senior software engineer specializing in code optimization.',
+function systemPrompt(lang: LanguageId): string {
+  const L = LANGUAGE_META[lang].label;
+  return [
+  `You are a senior software engineer specializing in ${L} code optimization.`,
   'You will be given a slow code snippet, its existing optimization attempts with their measured',
   'correctness and speedup, and (optionally) two reference optimization patterns.',
   'Follow these steps: 1) analyze the original code and what the existing attempts already tried,',
@@ -28,38 +31,46 @@ const SYSTEM = [
     'into new parameters, even if that looks cleaner; keep them hardcoded inside the function body.',
   'Reference patterns (if shown) use a DIFFERENT example function with its own name and parameters ' +
     'purely to illustrate a technique — they are not a template to copy wholesale. Take only the ' +
-    'TECHNIQUE from a pattern (e.g. "wrap the recursive call in @lru_cache") and apply it inside ' +
+    `TECHNIQUE from a pattern (e.g. ${lang === 'python' ? '"wrap the recursive call in @lru_cache"' : '"replace the linear scan with an unordered_set"'}) and apply it inside ` +
     'the ORIGINAL function\'s exact name and signature from "Slow code to optimize" below. Never ' +
     'adopt a pattern\'s function name or parameter list.',
-  'If file context (imports, constants, other functions) is provided, it already exists elsewhere ' +
+  `If file context (${lang === 'python' ? 'imports, constants, other functions' : '#includes, constants, other functions'}) is provided, it already exists elsewhere ` +
     'in the file and is available to your function as-is — do not redefine or repeat any of it in ' +
     'your answer, only return the function itself.',
   'Reply with strict JSON only, no markdown fences around the JSON itself, matching exactly:',
   '{"analysis": string, "opportunities": string, "explanation": string, "code": string}',
-  'The "code" field must contain the full function source as a plain string (escape newlines as \\n).',
-].join('\n');
+  `The "code" field must contain the full ${L} function source as a plain string (escape newlines as \\n).`,
+    ...(lang === 'cpp'
+      ? [
+          'Keep any #include directives your version needs at the top of the "code" field.',
+          'Assume it is compiled with -std=c++17 -O3, so the compiler already performs the trivial ' +
+            'transformations on its own — focus on algorithmic and data-structure improvements it cannot make for you.',
+        ]
+      : []),
+  ].join('\n');
+}
 
-function contextBlock(contextPrefix?: string): string {
+function contextBlock(lang: LanguageId, contextPrefix?: string): string {
   if (!contextPrefix?.trim()) return '';
   return [
     '',
     'File context available to this function (imports, constants, earlier functions — already',
     'defined elsewhere in the file; do not redefine any of this):',
-    '```python',
+    '```' + LANGUAGE_META[lang].fence,
     contextPrefix,
     '```',
   ].join('\n');
 }
 
-export function buildInitialPrompt(slowCode: string, contextPrefix?: string): Prompt {
+export function buildInitialPrompt(lang: LanguageId, slowCode: string, contextPrefix?: string): Prompt {
   return {
-    system: SYSTEM,
+    system: systemPrompt(lang),
     user: [
       'Slow code to optimize:',
-      '```python',
+      '```' + LANGUAGE_META[lang].fence,
       slowCode,
       '```',
-      contextBlock(contextPrefix),
+      contextBlock(lang, contextPrefix),
       '',
       'There are no existing attempts yet — this is the first attempt. Produce an optimized version.',
     ].join('\n'),
@@ -67,6 +78,7 @@ export function buildInitialPrompt(slowCode: string, contextPrefix?: string): Pr
 }
 
 export function buildIterationPrompt(
+  lang: LanguageId,
   slowCode: string,
   representative: Candidate[],
   patterns: RetrievedPatterns,
@@ -81,7 +93,7 @@ export function buildIterationPrompt(
           : 'A correct but unoptimized attempt';
       return [
         `${label} ${i + 1}:`,
-        '```python',
+        '```' + LANGUAGE_META[lang].fence,
         c.code.trim(),
         '```',
         `Accuracy: ${c.acc ?? 0}  Speedup: ${(c.speedup ?? 1).toFixed(2)}x${c.error ? `  Error: ${c.error}` : ''}`,
@@ -97,8 +109,8 @@ export function buildIterationPrompt(
       ? `Different pattern (an unexploited technique to consider):\n${patterns.different.description}\n- Before: ${patterns.different.slow}\n- After: ${patterns.different.fast}`
       : null,
     patterns.similar || patterns.different
-      ? 'Reminder: the pattern(s) above use their own example function name/parameters (e.g. ' +
-        '"fib(n)") only to show the technique. Your answer must keep the exact function name and ' +
+      ? 'Reminder: the pattern(s) above use their own example function name/parameters only to ' +
+        'show the technique. Your answer must keep the exact function name and ' +
         'parameter list from "Slow code to optimize" — copying a pattern\'s signature is wrong.'
       : null,
   ]
@@ -106,13 +118,13 @@ export function buildIterationPrompt(
     .join('\n\n');
 
   return {
-    system: SYSTEM,
+    system: systemPrompt(lang),
     user: [
       'Slow code to optimize:',
-      '```python',
+      '```' + LANGUAGE_META[lang].fence,
       slowCode,
       '```',
-      contextBlock(contextPrefix),
+      contextBlock(lang, contextPrefix),
       '',
       'Existing attempts so far:',
       attempts,
@@ -139,7 +151,7 @@ export function parseGoCotResponse(text: string): GoCotResponse {
   // fallback rather than the primary path. Explicitly excludes ```json fences: if the model wrapped
   // its (invalid) JSON envelope in one, that block is a failed structured response, not raw code,
   // and must not be executed as if it were.
-  const fenced = text.match(/```(?!json\b)(?:python)?\s*([\s\S]*?)```/);
+  const fenced = text.match(/```(?!json\b)(?:python|cpp|c\+\+)?\s*([\s\S]*?)```/);
   if (fenced) {
     return { analysis: '', opportunities: '', explanation: text.trim(), code: unescapeIfOverEscaped(fenced[1].trim()) };
   }
@@ -148,7 +160,7 @@ export function parseGoCotResponse(text: string): GoCotResponse {
 }
 
 function stripCodeFence(code: string): string {
-  const fenced = code.match(/```(?:python)?\s*([\s\S]*?)```/);
+  const fenced = code.match(/```(?:python|cpp|c\+\+)?\s*([\s\S]*?)```/);
   return (fenced ? fenced[1] : code).trim();
 }
 

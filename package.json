@@ -1,7 +1,7 @@
 {
   "name": "sbllm-optimizer",
   "displayName": "SBLLM Optimizer",
-  "description": "Search-based LLM code optimization for Python — generates multiple candidate optimizations, verifies each by actually running it, and iteratively evolves toward a faster, correct solution.",
+  "description": "Search-based LLM code optimization for Python and C++ — generates multiple candidate optimizations, verifies each by actually running it, and iteratively evolves toward a faster, correct solution.",
   "version": "0.2.1",
   "author": {
     "name": "Pronob Karmoker",
@@ -40,7 +40,9 @@
     "ollama",
     "gemini",
     "code speedup",
-    "profiling"
+    "profiling",
+    "c++",
+    "cpp"
   ],
   "galleryBanner": {
     "color": "#0F141E",
@@ -71,7 +73,7 @@
       "editor/context": [
         {
           "command": "sbllmOptimizer.optimizeSelection",
-          "when": "editorLangId == python && editorHasSelection",
+          "when": "(editorLangId == python || editorLangId == cpp) && editorHasSelection",
           "group": "1_modification"
         }
       ]

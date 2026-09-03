@@ -1,4 +1,4 @@
-import type { PythonAdapter } from '../lang/pythonAdapter.js';
+import type { LanguageAdapter } from '../lang/languageAdapter.js';
 import type { Candidate } from './types.js';
 
 /**
@@ -23,7 +23,7 @@ import type { Candidate } from './types.js';
  *   i.e. the mistakes most representative of the pool. Paper and released code agree here.
  */
 export class FitnessEvaluator {
-  constructor(private readonly adapter: PythonAdapter) {}
+  constructor(private readonly adapter: LanguageAdapter) {}
 
   async selectRepresentative(candidates: Candidate[], n: number): Promise<Candidate[]> {
     const sorted = [...candidates].sort((a, b) => (b.speedup ?? 1) - (a.speedup ?? 1));

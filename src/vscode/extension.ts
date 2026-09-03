@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import path from 'node:path';
 import { EvolutionaryOptimizer, type OptimizerResult } from '../core/optimizer/evolutionaryOptimizer.js';
 import type { Candidate } from '../core/fitness/types.js';
-import { findEnclosingFunctionRange } from '../core/lang/functionRange.js';
+import { findEnclosingFunctionRange, findEnclosingCppFunctionRange } from '../core/lang/functionRange.js';
+import type { LanguageId } from '../core/lang/languageAdapter.js';
 import { buildProvider, GEMINI_SECRET_KEY } from './llmProviderFactory.js';
 import { DiffContentProvider, SBLLM_DIFF_SCHEME } from './diffContentProvider.js';
 import { OptimizationPanel } from './insightsPanel.js';
@@ -43,8 +44,11 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
     vscode.window.showErrorMessage('SBLLM: open a Python file first.');
     return;
   }
-  if (editor.document.languageId !== 'python') {
-    vscode.window.showErrorMessage('SBLLM currently supports Python only.');
+  // The paper evaluates on Python and C++; both are supported here.
+  const language: LanguageId | null =
+    editor.document.languageId === 'python' ? 'python' : editor.document.languageId === 'cpp' ? 'cpp' : null;
+  if (!language) {
+    vscode.window.showErrorMessage('SBLLM supports Python and C++ files.');
     return;
   }
 
@@ -60,14 +64,17 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
     if (!vscode.workspace.isTrusted) return;
   }
 
-  const range = resolveTargetRange(editor);
+  const range = resolveTargetRange(editor, language);
   if (!range) {
     vscode.window.showErrorMessage('SBLLM: place your cursor inside a function, or select the code to optimize.');
     return;
   }
 
   const defLineText = editor.document.lineAt(range.start.line).text;
-  const defIndent = defLineText.match(/^(\s*)def\s/)?.[1]?.length ?? 0;
+  const defIndent =
+    language === 'python'
+      ? (defLineText.match(/^(\s*)def\s/)?.[1]?.length ?? 0)
+      : (defLineText.match(/^(\s*)\S/)?.[1]?.length ?? 0);
   if (defIndent > 0) {
     vscode.window.showErrorMessage(
       'SBLLM currently supports top-level functions only — this looks like a class method or ' +
@@ -94,7 +101,7 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
   }
 
   const scriptsDir = path.join(context.extensionPath, 'dist', 'python');
-  const optimizer = new EvolutionaryOptimizer(provider, { scriptsDir });
+  const optimizer = new EvolutionaryOptimizer(provider, { scriptsDir, language });
 
   const cfg = vscode.workspace.getConfiguration('sbllmOptimizer');
   const ns = cfg.get<number>('representativeSamples', 3);
@@ -114,13 +121,13 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
         const result = await optimizer.refineFurther({ ns, maxIterations, generationNumber, onProgress, signal });
         latestResult = result;
         panel.showResult(result);
-        await showDiffForCandidate(slowCode, result.best, 'Best (refined)');
+        await showDiffForCandidate(slowCode, result.best, 'Best (refined)', language);
       });
     },
     onShowDiff: (index) => {
       if (!latestResult) return;
       const candidate = index === 'best' ? latestResult.best : latestResult.history[index];
-      if (candidate) void showDiffForCandidate(slowCode, candidate, index === 'best' ? 'Best' : `#${index}`);
+      if (candidate) void showDiffForCandidate(slowCode, candidate, index === 'best' ? 'Best' : `#${index}`, language);
     },
   });
 
@@ -130,7 +137,7 @@ async function optimizeSelectionCommand(context: vscode.ExtensionContext): Promi
     const result = await optimizer.optimize(slowCode, { ns, maxIterations, generationNumber, onProgress, signal, contextPrefix });
     latestResult = result;
     panel.showResult(result);
-    await showDiffForCandidate(slowCode, result.best, 'Best');
+    await showDiffForCandidate(slowCode, result.best, 'Best', language);
   });
 }
 
@@ -170,10 +177,17 @@ async function applyToEditor(editor: vscode.TextEditor, range: vscode.Range, cod
   vscode.window.showInformationMessage('SBLLM: optimized code applied.');
 }
 
-async function showDiffForCandidate(originalCode: string, candidate: Candidate, label: string): Promise<void> {
+async function showDiffForCandidate(
+  originalCode: string,
+  candidate: Candidate,
+  label: string,
+  language: LanguageId,
+): Promise<void> {
   const id = ++diffCounter;
-  const originalUri = vscode.Uri.parse(`${SBLLM_DIFF_SCHEME}:/session-${id}/original.py`);
-  const optimizedUri = vscode.Uri.parse(`${SBLLM_DIFF_SCHEME}:/session-${id}/optimized.py`);
+  // Extension drives syntax highlighting in the diff editor, so it has to follow the language.
+  const ext = language === 'cpp' ? 'cpp' : 'py';
+  const originalUri = vscode.Uri.parse(`${SBLLM_DIFF_SCHEME}:/session-${id}/original.${ext}`);
+  const optimizedUri = vscode.Uri.parse(`${SBLLM_DIFF_SCHEME}:/session-${id}/optimized.${ext}`);
   diffProvider.set(originalUri, originalCode);
   diffProvider.set(optimizedUri, candidate.code);
   // preview:false so every diff opens as its own persistent tab — with preview:true, VS Code
@@ -190,13 +204,14 @@ async function showDiffForCandidate(originalCode: string, candidate: Candidate, 
 
 /** Resolves what to optimize: an explicit full-function selection is used as-is; a cursor or partial
  *  selection is widened to the enclosing `def` block (via the VS-Code-free findEnclosingFunctionRange). */
-function resolveTargetRange(editor: vscode.TextEditor): vscode.Range | null {
+function resolveTargetRange(editor: vscode.TextEditor, language: LanguageId): vscode.Range | null {
   const document = editor.document;
   const selection = editor.selection;
 
   if (!selection.isEmpty) {
     const selectedText = document.getText(selection).trim();
-    if (selectedText.startsWith('def ')) {
+    // A selection that already looks like a whole function definition is used as-is.
+    if (language === 'python' ? selectedText.startsWith('def ') : /\w[\w\s:<>,*&]*\([^)]*\)\s*\{/.test(selectedText)) {
       return selection;
     }
   }
@@ -205,7 +220,8 @@ function resolveTargetRange(editor: vscode.TextEditor): vscode.Range | null {
   for (let i = 0; i < document.lineCount; i++) lines.push(document.lineAt(i).text);
 
   const anchorLine = selection.isEmpty ? selection.active.line : selection.start.line;
-  const found = findEnclosingFunctionRange(lines, anchorLine);
+  const found =
+    language === 'python' ? findEnclosingFunctionRange(lines, anchorLine) : findEnclosingCppFunctionRange(lines, anchorLine);
 
   if (!found) {
     return selection.isEmpty ? null : selection;

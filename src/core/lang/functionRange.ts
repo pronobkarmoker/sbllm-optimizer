@@ -55,3 +55,70 @@ export function findEnclosingFunctionRange(lines: string[], anchorLine: number):
 
   return { startLine: defLine, endLine };
 }
+
+/**
+ * C++ equivalent. Braces delimit the body rather than indentation, so this scans upward for a line
+ * that looks like a function definition header and then matches braces forward to find its end.
+ * Brace counting ignores braces inside string and character literals and inside comments, since a
+ * `"}"` in a string would otherwise close the function early and truncate the selection.
+ */
+export function findEnclosingCppFunctionRange(lines: string[], anchorLine: number): LineRange | null {
+  // A definition header: an identifier, a parameter list, and an opening brace on the same line or
+  // the next one. Deliberately rejects control-flow keywords, which have the same shape.
+  const HEADER = /^[A-Za-z_][\w:<>,\s*&]*\s+[A-Za-z_]\w*\s*\([^;]*\)\s*(const\s*)?\{?\s*$/;
+  const NOT_A_FUNCTION = /^\s*(if|for|while|switch|catch|return|else|do)\b/;
+
+  let defLine = -1;
+  for (let line = anchorLine; line >= 0; line--) {
+    const text = lines[line];
+    if (text === undefined || text.trim() === '') continue;
+    if (NOT_A_FUNCTION.test(text)) continue;
+    if (HEADER.test(text.trimEnd())) {
+      defLine = line;
+      break;
+    }
+  }
+  if (defLine === -1) return null;
+
+  let depth = 0;
+  let seenOpen = false;
+  let inBlockComment = false;
+  for (let line = defLine; line < lines.length; line++) {
+    const text = lines[line];
+    let inString: string | null = null;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+      if (inBlockComment) {
+        if (c === '*' && next === '/') {
+          inBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+      if (inString) {
+        if (c === '\\') i++;
+        else if (c === inString) inString = null;
+        continue;
+      }
+      if (c === '/' && next === '/') break;
+      if (c === '/' && next === '*') {
+        inBlockComment = true;
+        i++;
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        inString = c;
+        continue;
+      }
+      if (c === '{') {
+        depth++;
+        seenOpen = true;
+      } else if (c === '}') {
+        depth--;
+        if (seenOpen && depth === 0) return { startLine: defLine, endLine: line };
+      }
+    }
+  }
+  return seenOpen ? { startLine: defLine, endLine: lines.length - 1 } : null;
+}

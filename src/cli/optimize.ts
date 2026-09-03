@@ -38,14 +38,16 @@ function buildProvider(): LLMProvider {
 
 async function main() {
   const provider = buildProvider();
-  const optimizer = new EvolutionaryOptimizer(provider, { scriptsDir: SCRIPTS_DIR });
+  const fileArgEarly = process.argv[2] ?? '';
+  const language = fileArgEarly.endsWith('.cpp') || fileArgEarly.endsWith('.cc') ? ('cpp' as const) : ('python' as const);
+  const optimizer = new EvolutionaryOptimizer(provider, { scriptsDir: SCRIPTS_DIR, language });
 
   // Optional file argument: `npm run optimize -- examples/has_duplicate.py`. Falls back to the
   // built-in example so the bare `npm run optimize` still works.
   const fileArg = process.argv[2];
   const slowCode = fileArg ? readFileSync(fileArg, 'utf8') : EXAMPLE_SLOW_CODE;
 
-  console.log(`Using provider: ${provider.id}`);
+  console.log(`Using provider: ${provider.id} | language: ${language}`);
   if (fileArg) console.log(`Source: ${fileArg}`);
   console.log('Slow code:\n' + slowCode);
 
