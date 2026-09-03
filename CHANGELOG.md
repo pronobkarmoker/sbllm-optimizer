@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.0
+
+**C++ support**, covering the second language the paper evaluates on (994 PIE test samples alongside Python's 986).
+
+- Candidates are compiled with `-std=c++17 -O3`, the paper's own settings. The candidate and the original are compiled into a single binary, each in its own namespace, so both are timed in the same process — the same paired-baseline measurement used for Python.
+- A curated 12-pattern C++ base, every entry verified to compile and to be behaviour-preserving.
+- C++ function detection by brace matching, aware of strings and comments so a `"}"` inside a literal cannot truncate the selection.
+- The search loop, fitness evaluation and test oracle are now language-independent, talking only to a `LanguageAdapter`.
+- Supported signatures: integer, floating-point, `bool`, `char`, `std::string`, and `std::vector` of those (one level of nesting). Anything else is reported clearly rather than guessed at.
+
+**Fixes**
+
+- **C++ timings were meaningless without this.** At `-O3` a call whose result is discarded in a timing loop is dead code and GCC deletes it outright, so an O(n²) scan over 4000 elements measured 0.0006 ms. Timed calls now feed a volatile sink behind a compiler barrier; the same scan measures 6.34 ms.
+- **Ollama requests now stream.** A non-streaming request sends no response headers until generation completes, so Node's `fetch` aborted a healthy but slow local model with `UND_ERR_HEADERS_TIMEOUT`; and a non-streaming `node:http` request inside the VS Code extension host returned HTTP 200 with a real content-length while delivering no body at all. Responses are read incrementally as NDJSON, over `fetch` with `node:http` as a fallback.
+- **Fenced code blocks inside a JSON reply no longer corrupt parsing.** A ``` fence found anywhere was being stripped, including one inside the `code` value, which left the bare language tag as the candidate's first line. This affected Python too.
+- **Model replies with raw newlines inside JSON strings are repaired** instead of being discarded — a common shape for small models emitting multi-line code.
+- New **SBLLM: Diagnose Connection** command, which probes the configured Ollama host over several transports and reports what it finds.
+
 ## 0.2.1
 
 - Documentation only. Expanded the author section so each role and organisation renders on its own line — Markdown collapses single newlines, so the previous version ran them together into one paragraph.

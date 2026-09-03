@@ -2,7 +2,7 @@
   "name": "sbllm-optimizer",
   "displayName": "SBLLM Optimizer",
   "description": "Search-based LLM code optimization for Python and C++ — generates multiple candidate optimizations, verifies each by actually running it, and iteratively evolves toward a faster, correct solution.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": {
     "name": "Pronob Karmoker",
     "url": "https://github.com/pronobkarmoker"
