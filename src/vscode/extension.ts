@@ -7,6 +7,7 @@ import type { LanguageId } from '../core/lang/languageAdapter.js';
 import { buildProvider, GEMINI_SECRET_KEY } from './llmProviderFactory.js';
 import { DiffContentProvider, SBLLM_DIFF_SCHEME } from './diffContentProvider.js';
 import { OptimizationPanel } from './insightsPanel.js';
+import { runDiagnosticsCommand } from './diagnostics.js';
 
 let diffProvider: DiffContentProvider;
 let diffCounter = 0;
@@ -21,6 +22,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('sbllmOptimizer.optimizeSelection', () => optimizeSelectionCommand(context)),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('sbllmOptimizer.diagnoseConnection', () => runDiagnosticsCommand()),
   );
 }
 

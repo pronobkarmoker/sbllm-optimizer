@@ -67,6 +67,10 @@
       {
         "command": "sbllmOptimizer.setGeminiApiKey",
         "title": "SBLLM: Set Gemini API Key"
+      },
+      {
+        "command": "sbllmOptimizer.diagnoseConnection",
+        "title": "SBLLM: Diagnose Connection"
       }
     ],
     "menus": {
