@@ -123,3 +123,21 @@ test('execution-based contract: flat lists that work on the original rule out ne
   const matrix = [[[[1, 2], [3, 4]]], [[[5]]], [[]]];
   assert.equal(preferFlatLists(matrix).size, 0);
 });
+
+test('patterns are shown as complete example functions, labelled "different function, technique only"', async () => {
+  const pat = (slow: string, fast: string) => ({
+    pattern: { id: 'p', description: 'Use a set.', slow, fast, source: 'curated' as const },
+    diff: '- old\n+ new',
+    score: 1,
+  });
+  const small = pat('def count_allowed(values, allowed):\n    return sum(v in allowed for v in values)', 'def count_allowed(values, allowed):\n    s = set(allowed)\n    return sum(v in s for v in values)');
+  const p = buildIterationPrompt('python', 'def f(xs):\n    return xs', [cand(0, 'def f(xs):\n    return xs', 1, 1)], { similar: small, different: null });
+  assert.match(p.user, /Example — a DIFFERENT, self-contained function/);
+  assert.match(p.user, /Before:\n```python\ndef count_allowed\(values, allowed\):/);
+  assert.match(p.user, /After:\n```python\ndef count_allowed/);
+  assert.match(p.user, /Technique: Use a set\./);
+  // A long mined pattern (a whole program) falls back to the compact diff.
+  const long = pat(Array.from({ length: 40 }, (_, i) => `x${i} = ${i}`).join('\n'), 'x = 1');
+  const q = buildIterationPrompt('python', 'def f(xs):\n    return xs', [], { similar: long, different: null });
+  assert.match(q.user, /```diff\n- old\n\+ new/);
+});

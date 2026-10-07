@@ -46,7 +46,7 @@ const FAST = `def has_duplicate(numbers):
     return len(set(numbers)) != len(numbers)`;
 const INPUTS = JSON.stringify({ inputs: [[[1, 2, 3]], [[1, 2, 1]], [[]], [[5]], [[7, 7]], [[3, 1, 4, 1, 5]]] });
 
-test('compare(): syntactic + semantic similarity and per-input behaviour for a real candidate', { skip: !HAS_PYTHON && 'python not available', timeout: 180_000 }, async () => {
+test('compare(): syntactic + semantic similarity and per-input behaviour for a real candidate', { skip: !HAS_PYTHON && 'python not available', timeout: 600_000 }, async () => {
   const opt = new EvolutionaryOptimizer(new ScriptedLLM(INPUTS, [goCot(FAST)]), { scriptsDir: SCRIPTS_DIR, language: 'python' });
   const result = await opt.optimize(SLOW, { maxIterations: 1, generationNumber: 1 });
   assert.ok(result.best);

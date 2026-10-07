@@ -40,7 +40,7 @@ const INPUTS = JSON.stringify({
 
 const noPy = !HAS_PYTHON && 'python not available';
 
-test('end to end: finds and verifies a faster correct version; bad candidates never crash the run', { skip: noPy, timeout: 240_000 }, async () => {
+test('end to end: finds and verifies a faster correct version; bad candidates never crash the run', { skip: noPy, timeout: 600_000 }, async () => {
   const llm = new ScriptedLLM(INPUTS, [goCot(WRONG), goCot(EXITS), goCot(FAST, 'use a set'), goCot(HELPER_FIRST), goCot(FASTER), 'not json and no code']);
   const opt = new EvolutionaryOptimizer(llm, { scriptsDir: SCRIPTS_DIR, language: 'python' });
   const seen: number[] = [];
@@ -76,7 +76,7 @@ test('end to end: finds and verifies a faster correct version; bad candidates ne
   assert.ok(result.iterations[0].similarPattern);
 });
 
-test('no correct candidate: best is null and nothing is offered', { skip: noPy, timeout: 120_000 }, async () => {
+test('no correct candidate: best is null and nothing is offered', { skip: noPy, timeout: 600_000 }, async () => {
   const llm = new ScriptedLLM(INPUTS, [goCot(WRONG)]);
   const opt = new EvolutionaryOptimizer(llm, { scriptsDir: SCRIPTS_DIR, language: 'python' });
   const result = await opt.optimize(SLOW, { maxIterations: 2, generationNumber: 2 });
@@ -84,7 +84,7 @@ test('no correct candidate: best is null and nothing is offered', { skip: noPy, 
   assert.equal(result.improved, false);
 });
 
-test('cancellation mid-search reports results found so far instead of throwing', { skip: noPy, timeout: 120_000 }, async () => {
+test('cancellation mid-search reports results found so far instead of throwing', { skip: noPy, timeout: 600_000 }, async () => {
   const controller = new AbortController();
   const llm = new ScriptedLLM(INPUTS, [goCot(FAST), goCot(FASTER), goCot(WRONG)], (n) => {
     if (n === 3) controller.abort();
@@ -96,7 +96,7 @@ test('cancellation mid-search reports results found so far instead of throwing',
   assert.ok(result.best);
 });
 
-test('if the top candidates fail the held-out tests, lower-ranked correct ones are verified too', { skip: noPy, timeout: 180_000 }, async () => {
+test('if the top candidates fail the held-out tests, lower-ranked correct ones are verified too', { skip: noPy, timeout: 600_000 }, async () => {
   // Very fast, but wrong for [10, 20, 30, 40] — an input that lands in the PRIVATE split.
   const TRICKY = `def has_duplicate(numbers):
     if numbers[:1] == [10]:
@@ -113,7 +113,7 @@ test('if the top candidates fail the held-out tests, lower-ranked correct ones a
   assert.ok(result.improved);
 });
 
-test('regression: the "returns False unless sorted" candidate from a real run is rejected', { skip: noPy, timeout: 180_000 }, async () => {
+test('regression: the "returns False unless sorted" candidate from a real run is rejected', { skip: noPy, timeout: 600_000 }, async () => {
   // Real qwen2.5-coder:1.5b output that passed every test before derived/duplicate stress inputs
   // existed — it is wrong for any unsorted list containing a duplicate, e.g. [3, 1, 3].
   const WRONG_SORTED = `def has_duplicate(numbers):

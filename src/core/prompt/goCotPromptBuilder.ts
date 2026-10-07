@@ -86,13 +86,36 @@ function describeAttempt(c: Candidate): string {
   return 'Correct version, but not faster than the original';
 }
 
-function patternBlock(title: string, purpose: string, p: RetrievedPattern | null): string | null {
+/** Longest example (in lines, per side) shown in full; longer ones fall back to the edit diff. */
+const MAX_EXAMPLE_LINES = 25;
+
+/**
+ * Renders a retrieved pattern for the prompt. The paper's reference code shows only the edit's
+ * changed lines (a diff). In real runs with a small model that caused a recurring failure: bare
+ * diff lines like `+ allowed_set = set(allowed)` mention names that don't exist in the user's
+ * function, and the model copied them (`NameError: name 'allowed' is not defined`). So a pattern is
+ * shown as a COMPLETE before/after example function, explicitly labelled as a different function
+ * whose technique — not its names — is what to reuse. Long mined patterns (whole programs) keep the
+ * compact diff.
+ */
+function patternBlock(title: string, purpose: string, p: RetrievedPattern | null, fence: string): string | null {
   if (!p) return null;
+  const lines = (s: string) => s.trim().split('\n').length;
+  const header = [`${title} (${purpose}):`, ...(p.pattern.description ? [`Technique: ${p.pattern.description}`] : [])];
+  if (lines(p.pattern.slow) > MAX_EXAMPLE_LINES || lines(p.pattern.fast) > MAX_EXAMPLE_LINES) {
+    return [...header, 'Edit (lines removed "-" and added "+"; names belong to a different program):', '```diff', p.diff, '```'].join('\n');
+  }
   return [
-    `${title} (${purpose}):`,
-    ...(p.pattern.description ? [p.pattern.description] : []),
-    '```diff',
-    p.diff,
+    ...header,
+    'Example — a DIFFERENT, self-contained function. Its names and parameters are NOT available in your',
+    'code; reuse only the technique.',
+    'Before:',
+    '```' + fence,
+    p.pattern.slow.trim(),
+    '```',
+    'After:',
+    '```' + fence,
+    p.pattern.fast.trim(),
     '```',
   ].join('\n');
 }
@@ -153,8 +176,8 @@ export function buildIterationPrompt(
     .join('\n\n');
 
   const patternText = [
-    patternBlock('Pattern 1 — similar', 'may help rectify errors in the existing versions', patterns.similar),
-    patternBlock('Pattern 2 — different', 'an optimization method not yet exploited', patterns.different),
+    patternBlock('Pattern 1 — similar', 'may help rectify errors in the existing versions', patterns.similar, fence),
+    patternBlock('Pattern 2 — different', 'an optimization method not yet exploited', patterns.different, fence),
   ]
     .filter(Boolean)
     .join('\n\n');

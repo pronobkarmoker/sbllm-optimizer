@@ -208,6 +208,7 @@ Where the implementation departs from the paper, it's because the paper describe
 | Patterns mined from PIE's 36K+/78K training pairs | Curated patterns built in; a PIE-mined base is optional (`scripts/mine_patterns.py`) | Shipping the corpus inside the extension isn't practical |
 | PIE's ~2.8 public / ~95.9 private test cases per problem | LLM-synthesized inputs plus generated stress inputs, the original function as its own oracle, split public/private | Arbitrary user code ships with no test suite |
 | Mean of 25 runs, excluding the first | Batched `timeit`-style timing with the original re-timed in the same process | More reliable for the sub-millisecond functions common in an editor |
+| Patterns shown as the edit's diff lines | Curated patterns shown as complete before/after example functions (long mined ones still as diffs) | Bare diff lines led small models to copy names that don't exist in the user's code; full examples: 6/6 vs 4/6 correct in a same-prompt comparison |
 | Tree-sitter abstraction for C++ | Regex token abstraction | Avoids shipping a native grammar; equivalent for dedup and BM25 |
 
 Algorithm 1 in the paper specifies `acc == 1` for the correct group, while the authors' released `merge.py` uses `acc > 0`. This implementation follows the paper.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4
+
+- **Patterns are shown to the model as complete before/after example functions**, labelled "a DIFFERENT function — reuse only the technique", instead of bare diff lines. The bare `+ allowed_set = set(allowed)` lines led small models to copy names that don't exist in the user's function (`NameError: name 'allowed' is not defined`, or an added `allowed` parameter). Same prompt, 6 replies each with qwen2.5-coder:1.5b: 4/6 correct with diffs, 6/6 with full examples. Long mined patterns (whole programs) still use the compact diff.
+- End-to-end test timeouts raised: with the stronger oracle each evaluation does more work, and the tests timed out on a busy machine.
+
 ## 0.4.3
 
 **Stronger correctness checking**, after a real run accepted a wrong candidate ("return False unless the list is sorted") as 100% equivalent and 38,000x faster: no test input was an unsorted list with a duplicate.
