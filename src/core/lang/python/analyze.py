@@ -294,7 +294,23 @@ class FunctionAnalyzer:
             dname = target.attr if isinstance(target, ast.Attribute) else getattr(target, 'id', '')
             if dname in MEMO_DECORATORS:
                 return
-        calls = [n for n in self._walk_own(self.func) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == fname]
+        params = {a.arg for a in self.func.args.posonlyargs + self.func.args.args + self.func.args.kwonlyargs}
+
+        def shrinks_param(arg):
+            # fib(n - 1), solve(n // 2), f(s[1:]) — a parameter made smaller. A call on some other
+            # value (a child node, a loop variable) is a tree walk, not overlapping subproblems.
+            for sub in ast.walk(arg):
+                if isinstance(sub, ast.BinOp) and any(isinstance(x, ast.Name) and x.id in params for x in ast.walk(sub)):
+                    return True
+                if isinstance(sub, ast.Subscript) and isinstance(sub.slice, ast.Slice) and isinstance(sub.value, ast.Name) and sub.value.id in params:
+                    return True
+            return False
+
+        calls = [
+            n for n in self._walk_own(self.func)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == fname
+            and any(shrinks_param(a) for a in n.args)
+        ]
         if len(calls) < 2:
             return
         # A hand-rolled memo table (dict named memo/cache/dp...) means it is already memoized.
@@ -334,6 +350,13 @@ def complexity_of(func, issues):
     for stmt in func.body:
         depth = max(depth, analyzer._nest_depth(stmt))
     if depth == 0:
+        # No loops — but a linear-time builtin (set(), sum(), max(), ...) still makes it O(n), and
+        # sorting makes it O(n log n). Only `len()` and plain arithmetic are O(1).
+        calls = {call_name(n) for n in analyzer._walk_own(func) if isinstance(n, ast.Call)}
+        if calls & {'sorted', 'sort'}:
+            return 'O(n log n)'
+        if calls & (LINEAR_BUILTINS | {'join', 'count', 'index', 'reverse', 'copy', 'Counter', 'reversed', 'enumerate', 'zip', 'map', 'filter'}):
+            return 'O(n)'
         return 'O(1)'
     return 'O(n)' if depth == 1 else 'O(n^{})'.format(depth)
 
@@ -477,6 +500,39 @@ def bound_names(tree):
     return names
 
 
+def strip_top_level(code):
+    """Removes top-level statements from a candidate that aren't part of the function: example
+    usage (`numbers = [...]; print(f(numbers))`), `if __name__ == '__main__':` blocks, and so on.
+    Keeps imports, function/class definitions, and assignments whose names the definitions use
+    (module-level constants or lookup tables)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code, 0
+    defs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
+    used = set()
+    for d in defs:
+        used |= {n.id for n in ast.walk(d) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    lines = code.split('\n')
+    kept, removed = [], 0
+    for node in tree.body:
+        keep = isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = set()
+            for t in targets:
+                names |= {n.id for n in ast.walk(t) if isinstance(n, ast.Name)}
+            keep = bool(names & used)
+        if keep:
+            start = min([d.lineno for d in getattr(node, 'decorator_list', [])] + [node.lineno])
+            kept.append('\n'.join(lines[start - 1:node.end_lineno]))
+        else:
+            removed += 1
+    if removed == 0:
+        return code, 0
+    return '\n\n'.join(kept) + '\n', removed
+
+
 def repair_imports(code, context):
     """Adds imports for well-known standard-library names the code uses but never imports or defines
     (and that the file context doesn't provide either)."""
@@ -512,7 +568,10 @@ def main():
     code = payload.get('code', '')
     try:
         if mode == 'repair':
-            result = repair_imports(code, payload.get('context', ''))
+            stripped, removed = strip_top_level(code)
+            result = repair_imports(stripped, payload.get('context', ''))
+            result['code'] = result.get('code', stripped)
+            result['removed'] = removed
         elif mode == 'context':
             result = filter_context(code)
         else:

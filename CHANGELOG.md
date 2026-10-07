@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.3
+
+**Stronger correctness checking**, after a real run accepted a wrong candidate ("return False unless the list is sorted") as 100% equivalent and 38,000x faster: no test input was an unsorted list with a duplicate.
+
+- The large stress inputs now come in four variants: ascending/distinct and shuffled-with-a-duplicate (search tests), shuffled/distinct and descending-with-a-duplicate (held-out tests).
+- Derived inputs: each model-generated list input is also tested reversed and with a duplicated element, with the original as ground truth. Catches candidates that silently assume sorted or unique data.
+- Candidates are cleaned before testing: module-level example usage and prints (Python) and an added main() (C++) are removed, so they never run during evaluation or end up in your file.
+- The Compare view states that semantic similarity is measured on the tested inputs — strong evidence, not a proof.
+- Complexity estimates count linear built-ins and whole-range operations, not just loops: `len(set(xs)) < len(xs)` is O(n), not O(1); sorting is O(n log n).
+- Static analysis no longer flags tree-walking recursion (recursing on child nodes) as exponential; only calls that shrink a parameter (f(n-1), f(n/2), f(s[1:])) count.
+
 ## 0.4.2
 
 - **Compare view: original and optimized side by side, with syntactic and semantic similarity.** Opens automatically for a verified result, and from **Compare** in the insights panel (any candidate) or **SBLLM: Compare Best Result**.

@@ -112,3 +112,40 @@ test('if the top candidates fail the held-out tests, lower-ranked correct ones a
   assert.equal(result.best?.code, FAST, 'the slower but correct candidate is still found');
   assert.ok(result.improved);
 });
+
+test('regression: the "returns False unless sorted" candidate from a real run is rejected', { skip: noPy, timeout: 180_000 }, async () => {
+  // Real qwen2.5-coder:1.5b output that passed every test before derived/duplicate stress inputs
+  // existed — it is wrong for any unsorted list containing a duplicate, e.g. [3, 1, 3].
+  const WRONG_SORTED = `def has_duplicate(numbers):
+    # Check if the list is sorted using a helper function
+    if not is_sorted(numbers):
+        return False
+
+    for i in range(len(numbers) - 1):  # Skip the last element
+        if numbers[i] == numbers[i + 1]:
+            return True
+
+    return False
+
+def is_sorted(numbers):
+    for i in range(1, len(numbers)):
+        if numbers[i - 1] > numbers[i]:
+            return False
+    return True
+
+# Example usage:
+numbers = [1, 2, 3, 4, 5]
+print(has_duplicate(numbers))  # Output: False`;
+  // The real run's inputs: tiny, all sorted or duplicate-free.
+  const weakInputs = JSON.stringify({ inputs: [[[]], [[1]], [[0]], [[1, 2, 3]], [[-1, -2, -3, 4]]] });
+  const logs: string[] = [];
+  const llm = new ScriptedLLM(weakInputs, [goCot(WRONG_SORTED), goCot(FAST)]);
+  const opt = new EvolutionaryOptimizer(llm, { scriptsDir: SCRIPTS_DIR, language: 'python' });
+  const result = await opt.optimize(SLOW, { maxIterations: 1, generationNumber: 2, onProgress: (m) => logs.push(m) });
+  const wrong = result.history.find((c) => c.code.includes('is_sorted'))!;
+  assert.ok(wrong, 'the wrong candidate was evaluated');
+  assert.ok(wrong.acc < 1, 'it must fail now');
+  assert.doesNotMatch(wrong.code, /print\(|Example usage/, 'module-level example usage is stripped');
+  assert.ok(logs.some((l) => /derived input/.test(l)), 'derived inputs were added');
+  assert.equal(result.best?.code, FAST);
+});

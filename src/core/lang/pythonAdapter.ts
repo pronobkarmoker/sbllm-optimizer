@@ -52,10 +52,14 @@ export class PythonAdapter implements LanguageAdapter {
 
   /** Adds imports for well-known stdlib names `code` uses without importing (analyze.py "repair"
    *  mode — parsing only, nothing is executed). */
-  async repairImports(code: string, context: string): Promise<{ code: string; added: string[] }> {
+  async repairImports(code: string, context: string): Promise<{ code: string; added: string[]; removed: number }> {
     const res = await this.runJsonScript('analyze.py', JSON.stringify({ mode: 'repair', code, context }), 15_000);
-    if (!res || typeof res.code !== 'string') return { code, added: [] };
-    return { code: res.code, added: Array.isArray(res.added) ? res.added : [] };
+    if (!res || typeof res.code !== 'string') return { code, added: [], removed: 0 };
+    return {
+      code: res.code,
+      added: Array.isArray(res.added) ? res.added : [],
+      removed: typeof res.removed === 'number' ? res.removed : 0,
+    };
   }
 
   /** Static analysis (analyze.py "analyze" mode). Parsing only — no user code is executed. */

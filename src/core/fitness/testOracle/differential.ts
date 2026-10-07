@@ -168,15 +168,28 @@ export class DifferentialTestOracle {
       );
     }
 
-    // 70/30 public/private split of the regular cases. Stress cases are split too, with the first
-    // going to PUBLIC: speedups during the search must be measured on an input big enough to show
-    // asymptotic differences. (Appending it last used to land it in the private set every time, so
-    // the search only ever timed tiny inputs where call overhead dominates.)
+    // Derived variants (reversed / with a duplicate) of the surviving inputs, with ground truth from
+    // the original. Failures on the original just mean the variant is outside the contract.
+    const augmented = this.augmentInputs(cases.map((c) => c.args));
+    const augCases: OracleTestCase[] = [];
+    if (augmented.length > 0) {
+      throwIfAborted(opts.signal);
+      const ab = await this.adapter.runBatch(this.baselineCode, this.funcName, augmented, BATCH_TIMEOUT_MS);
+      ab.results?.forEach((r, i) => {
+        if (r.ok) augCases.push({ args: augmented[i], expected: { output: r.output, stdout: r.stdout ?? '', argsAfter: r.argsAfter ?? null } });
+      });
+      if (augCases.length > 0) log(`Added ${augCases.length} derived input(s) (reversed / with a duplicate) to catch order or uniqueness assumptions.`);
+    }
+
+    // 70/30 public/private split of the regular cases; derived and stress cases alternate between
+    // the two, so both sets contain unsorted inputs, inputs with duplicates, and a large input. The
+    // first stress case goes to PUBLIC: speedups during the search must be measured on an input big
+    // enough to show asymptotic differences.
     const splitAt = Math.max(1, Math.ceil(cases.length * 0.7));
     this.publicTests = cases.slice(0, splitAt);
     this.privateTests = cases.slice(splitAt);
-    if (stressCases[0]) this.publicTests.push(stressCases[0]);
-    if (stressCases[1]) this.privateTests.push(stressCases[1]);
+    augCases.forEach((c, i) => (i % 2 === 0 ? this.privateTests : this.publicTests).push(c));
+    stressCases.forEach((c, i) => (i % 2 === 0 ? this.publicTests : this.privateTests).push(c));
     if (this.privateTests.length === 0) {
       // Too few cases to hold any out — re-verify on the public ones rather than on nothing.
       this.privateTests = [...this.publicTests];
@@ -277,14 +290,31 @@ export class DifferentialTestOracle {
 
   /**
    * Asking a model for "large" inputs rarely produces anything big enough for a speedup to mean
-   * anything. Takes the generated input with the longest list argument(s) and builds two large
-   * variants (ascending and pseudo-shuffled) of the same element type, with distinct elements so
-   * that, e.g., a duplicate check can't short-circuit on the first pair.
+   * anything. Takes the generated input with the longest list argument(s) and builds four large
+   * variants of the same element type:
+   *   0. ascending, all distinct      (public — timing without early exits)
+   *   1. shuffled, all distinct       (held-out)
+   *   2. shuffled, one duplicate      (public)
+   *   3. descending, one duplicate    (held-out)
+   * The duplicate/order variants matter for correctness, not just timing: with only sorted or only
+   * distinct data, a wrong candidate like "return False if the list isn't sorted" passed every test
+   * in a real run. The duplicated value sits at the far end, so an early-exit check still does real work.
    */
   private buildStressInputs(inputs: unknown[][]): unknown[][] {
     const longest = (entry: unknown[]) => Math.max(0, ...entry.map((a) => (Array.isArray(a) ? a.length : 0)));
     const template = [...inputs].sort((a, b) => longest(b) - longest(a))[0];
     if (!template || longest(template) === 0) return [];
+
+    const variant = (shuffle: boolean, descending: boolean, duplicate: boolean): unknown[] | null => {
+      const base = scaled(shuffle);
+      if (!base) return null;
+      return base.map((arg) => {
+        if (!Array.isArray(arg) || arg.length < 2) return arg;
+        const v = descending ? [...arg].reverse() : [...arg];
+        if (duplicate) v[v.length - 1] = v[0];
+        return v;
+      });
+    };
 
     const scaled = (shuffle: boolean): unknown[] | null => {
       const out: unknown[] = [];
@@ -319,7 +349,36 @@ export class DifferentialTestOracle {
       return out;
     };
 
-    return [scaled(false), scaled(true)].filter((x): x is unknown[] => x !== null);
+    return [variant(false, false, false), variant(true, false, false), variant(true, false, true), variant(false, true, true)].filter(
+      (x): x is unknown[] => x !== null,
+    );
+  }
+
+  /**
+   * Derived small inputs: for each generated input with a flat list argument, the same list
+   * reversed, and with its first element duplicated at the end. A model-generated test set tends to
+   * be "nice" (sorted, distinct); these cheap variants catch candidates that silently assume
+   * sortedness or uniqueness. The original's behaviour on them is the ground truth, as always.
+   */
+  private augmentInputs(inputs: unknown[][], max = 8): unknown[][] {
+    const seen = new Set(inputs.map((e) => JSON.stringify(e)));
+    const out: unknown[][] = [];
+    const push = (e: unknown[]) => {
+      const k = JSON.stringify(e);
+      if (!seen.has(k) && out.length < max) {
+        seen.add(k);
+        out.push(e);
+      }
+    };
+    for (const entry of inputs) {
+      entry.forEach((arg, i) => {
+        if (!Array.isArray(arg) || arg.length < 2 || !/^list<(num|str|bool)>$/.test(shapeOf(arg))) return;
+        const withArg = (v: unknown[]) => entry.map((a, k) => (k === i ? v : a));
+        push(withArg([...arg].reverse()));
+        push(withArg([...arg, arg[0]]));
+      });
+    }
+    return out;
   }
 
   async evaluatePublic(code: string): Promise<Fitness> {

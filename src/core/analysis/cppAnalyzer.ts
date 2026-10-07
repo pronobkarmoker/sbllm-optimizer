@@ -279,7 +279,24 @@ function analyzeFunction(code: string, masked: string, fn: CppFunctionInfo): Fun
 
   // Exponential recursion: two or more self-calls and no memo table.
   const body = masked.slice(fn.bodyOpen, fn.bodyClose);
-  const selfCalls = [...body.matchAll(new RegExp(`\\b${fn.name}\\s*\\(`, 'g'))];
+  // Only calls that shrink a parameter (f(n - 1), f(n / 2)) count: recursing on a child node or a
+  // loop variable is a tree walk, not overlapping subproblems.
+  const params = fn.paramsText
+    .split(',')
+    .map((p) => p.trim().match(/([A-Za-z_]\w*)\s*(?:=.*)?$/)?.[1])
+    .filter((p): p is string => !!p);
+  const shrinks = new RegExp(`\\b(${params.join('|') || '(?!)'})\\s*[-+/>]|[-+]\\s*\\b(${params.join('|') || '(?!)'})\\b`);
+  const argsAt = (start: number): string => {
+    let depth = 0;
+    for (let i = start; i < body.length; i++) {
+      if (body[i] === '(') depth++;
+      else if (body[i] === ')' && --depth === 0) return body.slice(start + 1, i);
+    }
+    return '';
+  };
+  const selfCalls = [...body.matchAll(new RegExp(`\\b${fn.name}\\s*\\(`, 'g'))].filter((m) =>
+    shrinks.test(argsAt((m.index ?? 0) + m[0].length - 1)),
+  );
   if (selfCalls.length >= 2 && !/\b\w*(memo|cache|dp)\w*\b/i.test(body)) {
     const at = fn.bodyOpen + (selfCalls[0].index ?? 0);
     add(
@@ -292,10 +309,17 @@ function analyzeFunction(code: string, masked: string, fn: CppFunctionInfo): Fun
     );
   }
 
+  // No loops, but a whole-range operation (sort, a container built from a range, an STL algorithm
+  // over .begin()/.end()) is still O(n) or O(n log n).
+  const loopless = /\bsort\s*\(/.test(body)
+    ? 'O(n log n)'
+    : /\.begin\s*\(\s*\)|\baccumulate\s*\(|\b(count|find|max_element|min_element)\s*\(/.test(body)
+      ? 'O(n)'
+      : 'O(1)';
   const complexity = issues.some((i) => i.kind === 'exponential-recursion')
     ? 'exponential'
     : maxDepth === 0
-      ? 'O(1)'
+      ? loopless
       : maxDepth === 1
         ? 'O(n)'
         : `O(n^${maxDepth})`;

@@ -83,3 +83,25 @@ test('Python analyzer reports syntax errors instead of throwing', { skip: !HAS_P
   const res = await new CodeAnalyzer({ scriptsDir: SCRIPTS_DIR }).analyze('def f(:\n  pass', 'python');
   assert.match(res.error ?? '', /SyntaxError/);
 });
+
+test('recursion over child nodes is not flagged as exponential; f(n-1) + f(n-2) is', { skip: !HAS_PYTHON && 'python not available' }, async () => {
+  const code = `def walk(node):
+    total = 0
+    for child in node.children:
+        total += walk(child)
+    return total + walk_extra(node)
+
+def keep(node):
+    return all(keep(s) for s in node.body) and all(keep(h) for h in node.handlers)
+
+def fib(n):
+    return n if n < 2 else fib(n - 1) + fib(n - 2)
+`;
+  const res = await new CodeAnalyzer({ scriptsDir: SCRIPTS_DIR }).analyze(code, 'python');
+  const byName = Object.fromEntries(res.functions.map((f) => [f.name, f]));
+  assert.deepEqual(kinds([byName.keep]), []);
+  assert.deepEqual(kinds([byName.fib]), ['exponential-recursion']);
+  const cpp = analyzeCpp('int depth(std::vector<int> kids, int i) { return depth(kids, kids[i]) + depth(kids, kids[i + 1]); }\nint fib(int n) { return n < 2 ? n : fib(n - 1) + fib(n - 2); }');
+  const c = Object.fromEntries(cpp.functions.map((f) => [f.name, f]));
+  assert.deepEqual(kinds([c.fib]), ['exponential-recursion']);
+});

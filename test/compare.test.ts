@@ -60,7 +60,7 @@ test('compare(): syntactic + semantic similarity and per-input behaviour for a r
   assert.ok(report.syntactic.tokenSimilarity > 0 && report.syntactic.tokenSimilarity < 1);
   assert.ok(report.syntactic.structuralSimilarity !== null);
   assert.equal(report.complexity.original, 'O(n^2)');
-  assert.equal(report.complexity.candidate, 'O(1)');
+  assert.equal(report.complexity.candidate, 'O(n)', 'set(numbers) is linear even without a loop');
   assert.equal(report.rows[0].kind, 'same', 'the def line is unchanged');
 
   // A wrong candidate: semantic similarity < 100% and the failing inputs are explained.

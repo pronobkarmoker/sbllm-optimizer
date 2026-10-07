@@ -218,7 +218,8 @@ function renderShell(cspSource: string): string {
     const sem = r.semantic;
     const allSame = sem.matched === sem.total;
     cards.appendChild(card('Semantic similarity', pct(sem.equivalence),
-      sem.matched + ' / ' + sem.total + ' test inputs behave identically (return value, printed output, argument state) — measured by running both',
+      sem.matched + ' / ' + sem.total + ' tested inputs behave identically (return value, printed output, argument state), ' +
+      'measured by running both. Strong evidence of equivalence on these inputs, not a proof for all inputs — review the diff before applying.',
       allSame ? 'ok' : 'bad'));
 
     const syn = card('Syntactic similarity', pct(r.syntactic.tokenSimilarity), null);
