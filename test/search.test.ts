@@ -93,3 +93,33 @@ test('a test-input reply truncated by the token cap keeps its complete entries',
   assert.deepEqual(salvageInputEntries(truncated), [[[1, 2, 3]], [[-1, -2, -3]], [[1, 1, 1]], [['a]', 'b']]]);
   assert.deepEqual(salvageInputEntries('no json here'), []);
 });
+
+test('flat-list contract: real model inputs with dicts / nested / None lists are dropped even without a majority', async () => {
+  const { filterToContract } = await import('../src/core/fitness/testOracle/differential.js');
+  // Captured from qwen2.5-coder:1.5b for has_duplicate(numbers) — no single majority shape.
+  const run0 = [[5], [-100], [7777777777], [9.8], ['string'], [null], [true], [[[1, 2], 3, 4]], [[0, 1, 2]], [[9, 8, 7]], [[100, 200]]];
+  const r0 = filterToContract(run0);
+  assert.ok(!r0.kept.some((e) => JSON.stringify(e) === '[[[1,2],3,4]]'), 'mixed nested list must be dropped');
+  assert.ok(r0.kept.some((e) => JSON.stringify(e) === '[[0,1,2]]'));
+
+  const run1 = [[[]], [[-10, 5]], [['hi', 'there']], [[1, 2, 2]], [[{}, {}]], [[null, null]]];
+  const r1 = filterToContract(run1);
+  assert.ok(!r1.kept.some((e) => JSON.stringify(e) === '[[{},{}]]'), 'list of dicts must be dropped');
+  assert.ok(!r1.kept.some((e) => JSON.stringify(e) === '[[null,null]]'), 'list of None must be dropped');
+  assert.ok(r1.kept.some((e) => JSON.stringify(e) === '[["hi","there"]]'), 'a flat list of strings is a valid input');
+
+  // A function that really takes a matrix: nested lists are the contract and are kept.
+  const matrix = [[[[1, 2], [3, 4]]], [[[5]]], [[[1, 1], [2, 2], [3, 3]]], [[1, 2]]];
+  const rm = filterToContract(matrix);
+  assert.equal(rm.kept.filter((e) => Array.isArray((e[0] as unknown[])[0])).length, 3);
+});
+
+test('execution-based contract: flat lists that work on the original rule out nested/dict inputs', async () => {
+  const { preferFlatLists } = await import('../src/core/fitness/testOracle/differential.js');
+  // has_duplicate accepted all of these; the flat ones prove flat lists are its contract.
+  const ran = [[[1, 2, 3]], [[[1, 2], [1, 2]]], [[[1, 2], [3, 4], [1, 2]]], [['a', 'b']], [[{}, {}]], [[]]];
+  assert.deepEqual([...preferFlatLists(ran)].sort(), [1, 2, 4]);
+  // A matrix function: flat lists would have raised on the original, so only nested ones ran.
+  const matrix = [[[[1, 2], [3, 4]]], [[[5]]], [[]]];
+  assert.equal(preferFlatLists(matrix).size, 0);
+});

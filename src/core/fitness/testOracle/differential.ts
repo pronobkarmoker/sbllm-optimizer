@@ -136,7 +136,7 @@ export class DifferentialTestOracle {
 
     // Stress inputs run as their own batch: if the original is so slow on them that the batch times
     // out, they are dropped instead of taking the regular inputs down with them.
-    const stressInputs = this.buildStressInputs(inputs);
+    const stressInputs = this.buildStressInputs(cases.map((c) => c.args));
     const stressCases: OracleTestCase[] = [];
     if (stressInputs.length > 0) {
       throwIfAborted(opts.signal);
@@ -151,6 +151,21 @@ export class DifferentialTestOracle {
         }
       });
       if (stressCases.length > 0) log(`Added ${stressCases.length} large stress input(s) (${STRESS_SIZE} elements) for timing.`);
+    }
+
+    // Execution-based contract check. The stress inputs are flat lists the original just ran
+    // successfully on, so they count as evidence too (in a real run, every model-generated list was
+    // nested or mixed, and only the stress inputs proved flat lists work). They are never dropped.
+    const structured = [...preferFlatLists([...cases.map((c) => c.args), ...stressCases.map((c) => c.args)])].filter(
+      (i) => i < cases.length,
+    );
+    if (structured.length > 0 && structured.length < cases.length) {
+      const drop = new Set(structured);
+      for (let i = cases.length - 1; i >= 0; i--) if (drop.has(i)) cases.splice(i, 1);
+      log(
+        `${structured.length} input(s) with nested, dict or mixed-type lists were discarded: the original also ` +
+          'accepts plain flat lists, so those are its real contract.',
+      );
     }
 
     // 70/30 public/private split of the regular cases. Stress cases are split too, with the first
@@ -423,11 +438,16 @@ export function shapeOf(v: unknown, depth = 0): string {
   if (typeof v === 'boolean') return 'bool';
   if (Array.isArray(v)) {
     if (v.length === 0 || depth > 3) return 'list<?>';
-    const inner = [...new Set(v.map((x) => shapeOf(x, depth + 1)).filter((s) => s !== 'list<?>' && s !== 'null'))].sort();
+    const shapes = v.map((x) => shapeOf(x, depth + 1));
+    // A list of only None values is its own (suspicious) shape; None mixed with values is a mix.
+    if (shapes.every((s) => s === 'null')) return 'list<null>';
+    const inner = [...new Set(shapes.filter((s) => s !== 'list<?>'))].sort();
     return `list<${inner.length ? inner.join('|') : '?'}>`;
   }
   return 'dict';
 }
+
+const FLAT_LIST = /^list<(num|str|bool)>$/;
 
 function compatible(shape: string, majority: string): boolean {
   if (shape === majority || shape === 'null') return true;
@@ -461,13 +481,59 @@ export function filterToContract(inputs: unknown[][]): { kept: unknown[][]; drop
     // with no consensus, there's no contract to infer.
     majority.push(best && informative >= 3 && best[1] * 2 > informative ? best[0] : null);
   }
+  // Flat-list contract: when flat, single-type lists (list<num>, list<str>, list<bool>) are at least
+  // as common as structured ones for an argument, the structured ones — lists holding dicts, nested
+  // lists, None, or a mix of types — are the model straying. This holds even without a majority
+  // shape overall (real replies mix scalars, strings and lists freely), and it is exactly the class
+  // of input that rejects every correct set- or sort-based rewrite. A function that really takes
+  // nested lists (a matrix) gets mostly nested inputs, so the rule doesn't fire for it.
+  const flatOnly: boolean[] = [];
+  for (let i = 0; i < arity; i++) {
+    let flat = 0;
+    let structured = 0;
+    for (const entry of inputs) {
+      const s = shapeOf(entry[i]);
+      if (FLAT_LIST.test(s)) flat++;
+      else if (s.startsWith('list<') && s !== 'list<?>') structured++;
+      else if (s === 'dict') structured++;
+    }
+    flatOnly.push(flat > 0 && flat >= structured);
+  }
+
   const kept: unknown[][] = [];
   const dropped: unknown[][] = [];
   for (const entry of inputs) {
-    const ok = entry.every((arg, i) => majority[i] === null || compatible(shapeOf(arg), majority[i]!));
+    const ok = entry.every((arg, i) => {
+      const s = shapeOf(arg);
+      if (flatOnly[i] && (s === 'dict' || (s.startsWith('list<') && s !== 'list<?>' && !FLAT_LIST.test(s)))) return false;
+      return majority[i] === null || compatible(s, majority[i]!);
+    });
     (ok ? kept : dropped).push(entry);
   }
   return kept.length > 0 ? { kept, dropped } : { kept: inputs, dropped: [] };
+}
+
+/**
+ * Execution-based contract check, applied to inputs the ORIGINAL ran successfully on. If, for some
+ * argument, a flat single-type list (list<num>/list<str>/list<bool>) works, then the function accepts
+ * flat lists — and inputs holding nested lists, dicts, None or mixed types in that argument are the
+ * model straying outside the intended contract (an `==` scan happens to tolerate them; any set- or
+ * sort-based rewrite does not). A function that genuinely needs nested lists (a matrix) fails on a
+ * flat list, so no flat input survives for it and nothing is dropped. Returns the indices to drop.
+ */
+export function preferFlatLists(argsList: unknown[][]): Set<number> {
+  const drop = new Set<number>();
+  if (argsList.length < 2) return drop;
+  const arity = Math.max(...argsList.map((a) => a.length));
+  for (let i = 0; i < arity; i++) {
+    const shapes = argsList.map((a) => shapeOf(a[i]));
+    if (!shapes.some((s) => FLAT_LIST.test(s))) continue;
+    shapes.forEach((s, k) => {
+      if (s === 'dict' || (s.startsWith('list<') && s !== 'list<?>' && !FLAT_LIST.test(s))) drop.add(k);
+    });
+  }
+  // Never drop everything.
+  return drop.size < argsList.length ? drop : new Set();
 }
 
 /**
