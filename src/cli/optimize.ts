@@ -73,6 +73,22 @@ async function main() {
     console.log('No candidate was correct on both public and private tests.');
   }
 
+  if (result.best) {
+    const cmp = await optimizer.compare(result.best);
+    const pct = (x: number | null) => (x === null ? 'n/a' : `${Math.round(x * 100)}%`);
+    const s = cmp.syntactic;
+    console.log('\n=== Original vs optimized ===');
+    console.log(`Semantic similarity:   ${pct(cmp.semantic.equivalence)} (${cmp.semantic.matched}/${cmp.semantic.total} inputs behave identically)`);
+    console.log(`Token similarity:      ${pct(s.tokenSimilarity)}`);
+    console.log(`Structural similarity: ${pct(s.structuralSimilarity)} (AST, names/literals normalized)`);
+    console.log(`Lines:                 ${s.linesUnchanged} unchanged, ${s.linesChanged} changed, ${s.linesAdded} added, ${s.linesRemoved} removed`);
+    console.log(`Complexity:            ${cmp.complexity.original ?? '?'} -> ${cmp.complexity.candidate ?? '?'}`);
+    for (const c of cmp.semantic.cases) {
+      const set = c.stress ? 'stress  ' : c.split === 'public' ? 'search  ' : 'held-out';
+      console.log(`  ${c.match ? '✓' : '✗'} [${set}] ${c.input.slice(0, 50).padEnd(50)} orig ${fmt(c.originalMs).padStart(10)}  opt ${fmt(c.candidateMs).padStart(10)}`);
+    }
+  }
+
   console.log('\n=== Finalists (private-test verification) ===');
   for (const f of result.finalists) {
     console.log(

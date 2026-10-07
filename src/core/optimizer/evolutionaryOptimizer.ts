@@ -11,6 +11,29 @@ import type { Prompt } from '../llm/llmProvider.js';
 import { CancelledError, isAbortError } from '../util/abort.js';
 import { DegenerateOutputError } from '../llm/llmProvider.js';
 import { repairCandidate } from './candidateRepair.js';
+import { CodeAnalyzer } from '../analysis/analyzer.js';
+import { sideBySide, syntacticSimilarity, type SideBySideRow, type SyntacticSimilarity } from '../compare/similarity.js';
+import type { CaseComparison } from '../fitness/testOracle/differential.js';
+
+export interface ComparisonReport {
+  functionName: string;
+  language: LanguageId;
+  candidateId: number;
+  original: string;
+  candidate: string;
+  rows: SideBySideRow[];
+  syntactic: SyntacticSimilarity;
+  semantic: {
+    matched: number;
+    total: number;
+    /** Fraction of all test inputs on which both versions behave identically. */
+    equivalence: number;
+    cases: CaseComparison[];
+  };
+  complexity: { original: string | null; candidate: string | null };
+  /** Total original time / total candidate time over all inputs (null unless all match). */
+  speedup: number | null;
+}
 
 export interface OptimizerOptions {
   /** Representative sample count (Ns). Default 3 — the paper's tuned optimum (§IV-D, Fig. 7). */
@@ -97,6 +120,7 @@ export class EvolutionaryOptimizer {
   readonly adapter: LanguageAdapter;
   private readonly fitness: FitnessEvaluator;
   private readonly patterns: PatternRetriever;
+  private readonly analyzer: CodeAnalyzer;
   readonly language: LanguageId;
 
   private slowCode = '';
@@ -121,10 +145,56 @@ export class EvolutionaryOptimizer {
         : new PythonAdapter(config.scriptsDir, { pythonPath: config.pythonPath });
     this.fitness = new FitnessEvaluator(this.adapter);
     this.patterns = new PatternRetriever(this.adapter, { externalFile: config.patternFile });
+    this.analyzer = new CodeAnalyzer({ scriptsDir: config.scriptsDir, pythonPath: config.pythonPath });
   }
 
   get hasSession(): boolean {
     return this.oracle !== null;
+  }
+
+  /**
+   * Side-by-side comparison of the original and a candidate: line alignment, syntactic similarity
+   * (token and AST-structural), execution-based semantic similarity (behaviour on every test input,
+   * with per-input timings), and the static complexity estimate of each.
+   */
+  async compare(candidate: Candidate): Promise<ComparisonReport> {
+    const oracle = this.oracle;
+    if (!oracle) throw new Error('compare() called before optimize() — no active session.');
+    const [origAbs, candAbs] = await this.adapter.abstractMany([this.slowCode, candidate.code]).catch(() => [null, null]);
+    const cases = await oracle.compareDetailed(candidate.code);
+    const matched = cases.filter((c) => c.match);
+    const sumOrig = matched.reduce((s, c) => s + (c.originalMs ?? 0), 0);
+    const sumCand = matched.reduce((s, c) => s + (c.candidateMs ?? 0), 0);
+
+    const complexityOf = async (code: string): Promise<string | null> => {
+      try {
+        const res = await this.analyzer.analyze(code, this.language);
+        return res.functions.find((f) => f.name === oracle.funcName)?.complexity ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    return {
+      functionName: oracle.funcName,
+      language: this.language,
+      candidateId: candidate.id,
+      original: this.slowCode,
+      candidate: candidate.code,
+      rows: sideBySide(this.slowCode, candidate.code),
+      syntactic: syntacticSimilarity(this.slowCode, candidate.code, this.language, {
+        original: origAbs ?? null,
+        candidate: candAbs ?? null,
+      }),
+      semantic: {
+        matched: matched.length,
+        total: cases.length,
+        equivalence: cases.length > 0 ? matched.length / cases.length : 0,
+        cases,
+      },
+      complexity: { original: await complexityOf(this.slowCode), candidate: await complexityOf(candidate.code) },
+      speedup: matched.length === cases.length && sumCand > 0 && sumOrig > 0 ? sumOrig / sumCand : null,
+    };
   }
 
   async optimize(slowCode: string, opts: OptimizerOptions = {}): Promise<OptimizerResult> {

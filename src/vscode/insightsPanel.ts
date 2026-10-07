@@ -6,6 +6,7 @@ export interface PanelCallbacks {
   onApply: (candidateId: number | 'best') => void;
   onRefine: () => void;
   onShowDiff: (candidateId: number | 'best') => void;
+  onCompare: (candidateId: number | 'best') => void;
   onCancel: () => void;
 }
 
@@ -61,6 +62,7 @@ export class OptimizationPanel {
       if (msg.command === 'apply') this.callbacks.onApply(msg.id ?? 'best');
       else if (msg.command === 'refine') this.callbacks.onRefine();
       else if (msg.command === 'showDiff') this.callbacks.onShowDiff(msg.id ?? 'best');
+      else if (msg.command === 'compare') this.callbacks.onCompare(msg.id ?? 'best');
       else if (msg.command === 'cancel') this.callbacks.onCancel();
     });
     this.panel.webview.html = renderShell(this.panel.webview.cspSource);
@@ -217,6 +219,7 @@ function renderShell(cspSource: string): string {
   <footer class="actions">
     <button id="apply" class="btn btn-primary" disabled>Apply to Editor</button>
     <button id="refine" class="btn btn-secondary" disabled>Refine Further</button>
+    <button id="compare" class="btn btn-secondary" disabled>Compare</button>
     <button id="diff" class="btn btn-secondary" disabled>Show Diff</button>
     <button id="cancel" class="btn btn-secondary hidden">Cancel</button>
   </footer>
@@ -249,7 +252,7 @@ function renderShell(cspSource: string): string {
     $('cancel').classList.toggle('hidden', !running);
     if (running) {
       setStatus('running', label || 'Running');
-      $('apply').disabled = true; $('refine').disabled = true; $('diff').disabled = true;
+      $('apply').disabled = true; $('refine').disabled = true; $('diff').disabled = true; $('compare').disabled = true;
       show('progress-card');
     }
   }
@@ -267,6 +270,7 @@ function renderShell(cspSource: string): string {
     tr.appendChild(res);
     tr.appendChild(el('td', c.acc === 1 ? fmtX(c.speedup) : '—', 'num'));
     const act = el('td');
+    act.appendChild(linkBtn('Compare', () => vscode.postMessage({ command: 'compare', id: c.id }), state.running));
     act.appendChild(linkBtn('Diff', () => vscode.postMessage({ command: 'showDiff', id: c.id })));
     tr.appendChild(act);
     return tr;
@@ -344,6 +348,7 @@ function renderShell(cspSource: string): string {
       if (f.acc !== 1 && f.error) { const e = el('div', f.error, 'err'); e.title = f.error; st.appendChild(e); }
       tr.appendChild(st);
       const act = el('td');
+      act.appendChild(linkBtn('Compare', () => vscode.postMessage({ command: 'compare', id: f.id }), state.running));
       act.appendChild(linkBtn('Diff', () => vscode.postMessage({ command: 'showDiff', id: f.id })));
       act.appendChild(linkBtn(state.applied.has(f.id) ? 'Applied' : 'Apply', () => vscode.postMessage({ command: 'apply', id: f.id }), !eligible || state.running));
       tr.appendChild(act);
@@ -391,6 +396,7 @@ function renderShell(cspSource: string): string {
       $('apply').disabled = !r.improved;
       $('refine').disabled = false;
       $('diff').disabled = !r.best;
+      $('compare').disabled = !r.best;
     } else if (msg.command === 'applied') {
       state.applied.add(msg.id);
       if (state.result) renderFinalists(state.result);
@@ -406,6 +412,7 @@ function renderShell(cspSource: string): string {
   $('apply').addEventListener('click', () => vscode.postMessage({ command: 'apply', id: 'best' }));
   $('refine').addEventListener('click', () => vscode.postMessage({ command: 'refine' }));
   $('diff').addEventListener('click', () => vscode.postMessage({ command: 'showDiff', id: 'best' }));
+  $('compare').addEventListener('click', () => vscode.postMessage({ command: 'compare', id: 'best' }));
   $('cancel').addEventListener('click', () => { $('cancel').disabled = true; vscode.postMessage({ command: 'cancel' }); setTimeout(() => { $('cancel').disabled = false; }, 1500); });
 })();
 </script>

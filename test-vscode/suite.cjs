@@ -75,7 +75,7 @@ async function run() {
       assert.ok(ext, 'extension not found');
       await ext.activate();
       const cmds = await vscode.commands.getCommands(true);
-      for (const c of ['optimizeSelection', 'optimizeFunction', 'analyzeFile', 'showHistory', 'applyBest', 'cancel', 'setOpenAIApiKey']) {
+      for (const c of ['optimizeSelection', 'optimizeFunction', 'analyzeFile', 'showHistory', 'applyBest', 'compareBest', 'cancel', 'setOpenAIApiKey']) {
         assert.ok(cmds.includes(`sbllmOptimizer.${c}`), `missing command ${c}`);
       }
     });
@@ -142,10 +142,18 @@ async function run() {
         assert.ok(requests.some((r) => (r.messages || []).some((m) => /\[Crossover\]/.test(m.content || ''))), 'GO-COT prompt was not used');
       });
 
-      await step('insights panel and diff tab are open', async () => {
-        const labels = vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label));
-        assert.ok(labels.includes('SBLLM Optimization Insights'), labels.join(' | '));
-        assert.ok(labels.some((l) => l.startsWith('SBLLM: Original ↔ Best')), labels.join(' | '));
+      await step('insights panel and the side-by-side Compare view open for the result', async () => {
+        const tabLabels = () => vscode.window.tabGroups.all.flatMap((g) => g.tabs.map((t) => t.label));
+        // Webview tabs are registered asynchronously after the panel is created.
+        await waitFor('Compare tab', () => tabLabels().some((l) => /^SBLLM Compare: has_duplicate #\d+$/.test(l)), 15000).catch(() => {
+          throw new Error('Compare tab not open; tabs: ' + tabLabels().join(' | '));
+        });
+        assert.ok(tabLabels().includes('SBLLM Optimization Insights'), tabLabels().join(' | '));
+      });
+
+      await step('Compare Best Result runs the syntactic + semantic comparison', async () => {
+        const ok = await vscode.commands.executeCommand('sbllmOptimizer.compareBest');
+        assert.equal(ok, true);
       });
 
       await step('Apply Best Result replaces the function in the document', async () => {

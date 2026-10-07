@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.2
+
+- **Compare view: original and optimized side by side, with syntactic and semantic similarity.** Opens automatically for a verified result, and from **Compare** in the insights panel (any candidate) or **SBLLM: Compare Best Result**.
+  - Side-by-side code with syntax highlighting; removed / added / changed lines aligned and colour-coded.
+  - *Syntactic similarity*: token similarity (comments ignored) and structural (AST) similarity — the same comparison after identifiers and literals are normalized, so a rename alone doesn't lower it — plus lines unchanged/changed/added/removed.
+  - *Semantic similarity*, measured by execution: both versions run on every test input (search, held-out and stress); the share of inputs where return value, printed output and argument state are identical, with a per-input table of both outputs, both timings and the reason for any mismatch.
+  - Static complexity estimate before → after (e.g. O(n^2) → O(n)), and the overall speedup.
+- `npm run optimize` prints the same comparison.
+
 ## 0.4.1
 
 - If every top candidate fails the held-out tests, the remaining candidates that passed the search tests are verified too — a slower but correct one was being thrown away.

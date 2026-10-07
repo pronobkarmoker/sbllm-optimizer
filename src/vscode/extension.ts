@@ -8,6 +8,7 @@ import { isAbortError } from '../core/util/abort.js';
 import { buildProvider, GEMINI_SECRET_KEY, OPENAI_SECRET_KEY } from './llmProviderFactory.js';
 import { DiffContentProvider, SBLLM_DIFF_SCHEME } from './diffContentProvider.js';
 import { OptimizationPanel } from './insightsPanel.js';
+import { ComparePanel } from './comparePanel.js';
 import { runDiagnosticsCommand } from './diagnostics.js';
 import { AnalysisController } from './analysisController.js';
 import { HistoryStore, type HistoryRecord } from './historyStore.js';
@@ -55,6 +56,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('sbllmOptimizer.analyzeFile', () => analyzeFileCommand()),
     vscode.commands.registerCommand('sbllmOptimizer.showHistory', () => showHistoryCommand()),
     vscode.commands.registerCommand('sbllmOptimizer.cancel', () => session?.controller?.abort()),
+    vscode.commands.registerCommand('sbllmOptimizer.compareBest', async () => {
+      if (!session?.result?.best) {
+        vscode.window.showInformationMessage('SBLLM: there is no result to compare yet.');
+        return false;
+      }
+      return compareCandidate(session, OptimizationPanel.createOrShow(), 'best');
+    }),
     vscode.commands.registerCommand('sbllmOptimizer.applyBest', async () => {
       if (!session?.result?.improved) {
         vscode.window.showInformationMessage('SBLLM: there is no verified optimization to apply.');
@@ -186,6 +194,7 @@ async function optimizeCommand(context: vscode.ExtensionContext, target?: { uri:
       const c = findCandidate(s, id);
       if (c) void showDiff(s, c, id === 'best' ? 'Best' : `#${c.id}`);
     },
+    onCompare: (id) => void compareCandidate(s, panel, id),
     onCancel: () => s.controller?.abort(),
   });
   panel.reset({ functionName, language: language === 'cpp' ? 'C++' : 'Python', model: built.label, slowCode });
@@ -244,7 +253,8 @@ async function runSearch(s: Session, panel: OptimizationPanel, mode: 'optimize' 
         if (!isCurrent()) return;
         panel.showResult(result);
         if (result.improved && result.best) {
-          await showDiff(s, result.best, mode === 'optimize' ? 'Best' : 'Best (refined)');
+          // The side-by-side comparison (with syntactic and semantic similarity) opens for the result.
+          await compareCandidate(s, panel, 'best');
           void vscode.window
             .showInformationMessage(
               `SBLLM: ${s.functionName} is ${result.best.speedup.toFixed(2)}x faster (verified on held-out tests).`,
@@ -362,6 +372,48 @@ async function applyCandidate(s: Session, panel: OptimizationPanel, id: number |
   await history.markApplied(s.historyId).catch(() => {});
   log(`Applied candidate #${candidate.id} to ${s.functionName}.`);
   vscode.window.showInformationMessage(`SBLLM: applied optimized ${s.functionName} (#${candidate.id}). Undo with Ctrl+Z.`);
+  return true;
+}
+
+/** Runs the side-by-side comparison for a candidate and shows it in the Compare view. */
+async function compareCandidate(s: Session, panel: OptimizationPanel, id: number | 'best'): Promise<boolean> {
+  const candidate = findCandidate(s, id);
+  if (!candidate || !s.result) {
+    vscode.window.showInformationMessage('SBLLM: that candidate is no longer available to compare.');
+    return false;
+  }
+  let report;
+  try {
+    report = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: `SBLLM: comparing #${candidate.id} with the original…` },
+      () => s.optimizer.compare(candidate),
+    );
+  } catch (err) {
+    vscode.window.showErrorMessage(`SBLLM: comparison failed — ${(err as Error).message}`);
+    return false;
+  }
+  const verified = s.result.finalists.find((f) => f.id === candidate.id);
+  const canApply = !!verified && verified.acc === 1 && verified.speedup >= s.result.minSpeedup;
+  const view = ComparePanel.show(
+    report,
+    {
+      onApply: (cid) =>
+        void applyCandidate(s, panel, cid).then((ok) => {
+          if (ok) view.showApplied();
+        }),
+      onNativeDiff: (cid) => {
+        const c = findCandidate(s, cid);
+        if (c) void showDiff(s, c, `#${cid}`);
+      },
+    },
+    canApply,
+  );
+  log(
+    `Compared #${candidate.id}: semantic ${report.semantic.matched}/${report.semantic.total} inputs identical, ` +
+      `token similarity ${Math.round(report.syntactic.tokenSimilarity * 100)}%, ` +
+      `structural similarity ${report.syntactic.structuralSimilarity === null ? 'n/a' : Math.round(report.syntactic.structuralSimilarity * 100) + '%'}, ` +
+      `complexity ${report.complexity.original ?? '?'} -> ${report.complexity.candidate ?? '?'}.`,
+  );
   return true;
 }
 

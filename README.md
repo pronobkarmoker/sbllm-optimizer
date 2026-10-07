@@ -42,6 +42,7 @@ The same works for C++, compiled with `-std=c++17 -O3` (the paper's own settings
 - **Adaptive optimization pattern retrieval** — BM25 over the abstracted code and the abstracted *deleted/added statements* of each optimization pair, retrieving one **similar** pattern (to fix errors) and one **different** pattern (an unexploited technique), as in the paper's Algorithm 1. Ships with curated patterns and can load a pattern base mined from PIE.
 - **Genetic-operator-inspired prompting (GO-COT)** — explicit crossover / mutation / generation steps with a fixed reasoning specification.
 - **Verified results only** — the top candidates are re-measured on held-out private tests; only a candidate that is correct there *and* at least 10% faster (the paper's OPT threshold) is offered for Apply.
+- **Compare view** — original and optimized code side by side (syntax-highlighted, changed lines aligned), with *syntactic similarity* (token and AST-structural similarity, lines changed) and *semantic similarity* measured by execution: how many test inputs both versions handle identically, with a per-input table of outputs and timings, plus the complexity before → after.
 - **Optimization Insights panel** — live candidate list, an original-vs-optimized time comparison, verified finalists, the per-iteration search trace (which samples and patterns were used), the model's reasoning, and Apply / Refine / Diff / Cancel.
 - **Cancel any time** — cancelling keeps and verifies everything found so far.
 - **History** — every run is saved (JSON, in extension storage) and can be reviewed and re-diffed later.
@@ -169,6 +170,7 @@ sbllm-optimizer/
 |---|---|
 | **SBLLM: Optimize Selected Code** | Runs the search on the function under the cursor / selection |
 | **SBLLM: Analyze File for Performance Issues** | Lists the static-analysis findings for the file and jumps to them |
+| **SBLLM: Compare Best Result** | Side-by-side comparison with syntactic and semantic similarity |
 | **SBLLM: Apply Best Result** | Applies the verified best result of the current run |
 | **SBLLM: Show Optimization History** | Browse past runs, re-open their diffs, copy their code |
 | **SBLLM: Cancel Optimization** | Stops the search and reports the best verified result so far |

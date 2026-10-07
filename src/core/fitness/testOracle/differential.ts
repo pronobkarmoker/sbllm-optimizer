@@ -1,5 +1,5 @@
 import { DegenerateOutputError, type LLMProvider } from '../../llm/llmProvider.js';
-import type { LanguageAdapter } from '../../lang/languageAdapter.js';
+import type { CallResult, LanguageAdapter } from '../../lang/languageAdapter.js';
 import { LANGUAGE_META } from '../../lang/languageAdapter.js';
 import { deepAlmostEqual } from '../../util/deepAlmostEqual.js';
 import { extractJson } from '../../util/json.js';
@@ -330,6 +330,48 @@ export class DifferentialTestOracle {
     return this.cached(`private\0${code}`, () => this.evaluateAgainst(code, this.privateTests));
   }
 
+  /**
+   * Execution-based semantic comparison for the Compare view: runs `code` and the original on EVERY
+   * test input (public, held-out and stress) in one paired batch, and reports each case — the input,
+   * both behaviours, whether they are identical (return value, printed output and argument state),
+   * and both timings.
+   */
+  async compareDetailed(code: string): Promise<CaseComparison[]> {
+    const all: { test: OracleTestCase; split: 'public' | 'private' }[] = [];
+    for (const t of this.publicTests) all.push({ test: t, split: 'public' });
+    for (const t of this.privateTests) if (!this.publicTests.includes(t)) all.push({ test: t, split: 'private' });
+
+    const batch = await this.adapter.runBatch(
+      this.withContext(code),
+      this.funcName,
+      all.map((a) => a.test.args),
+      BATCH_TIMEOUT_MS,
+      this.baselineCode,
+    );
+    return all.map(({ test, split }, i): CaseComparison => {
+      const r = batch.results?.[i];
+      const expected = previewBehaviour(test.expected.output, test.expected.stdout);
+      if (!r) {
+        return {
+          split, stress: !!test.stress, input: previewArgs(test.args), expected, actual: null, match: false,
+          reason: batch.compileError ?? 'no result for this input', originalMs: null, candidateMs: null,
+        };
+      }
+      const check = checkCase(r, test);
+      return {
+        split,
+        stress: !!test.stress,
+        input: previewArgs(test.args),
+        expected,
+        actual: r.ok ? previewBehaviour(r.output, r.stdout ?? '') : null,
+        match: check.match,
+        reason: check.match ? undefined : check.reason,
+        originalMs: typeof r.baselineTimeMs === 'number' && r.baselineTimeMs >= 0 ? r.baselineTimeMs : null,
+        candidateMs: r.ok ? r.timeMs : null,
+      };
+    });
+  }
+
   private async cached(key: string, fn: () => Promise<Fitness>): Promise<Fitness> {
     const hit = this.cache.get(key);
     if (hit) return hit;
@@ -384,11 +426,8 @@ export class DifferentialTestOracle {
         firstError ??= 'no result for this input';
         return;
       }
-      const expected = t.expected;
-      const stdoutMatches = (r.stdout ?? '').trimEnd() === expected.stdout.trimEnd();
-      const outputMatches = deepAlmostEqual(r.output, expected.output);
-      const argsMatch = deepAlmostEqual(r.argsAfter ?? null, expected.argsAfter ?? null);
-      if (r.ok && outputMatches && stdoutMatches && argsMatch) {
+      const check = checkCase(r, t);
+      if (check.match) {
         matched++;
         candSum += r.timeMs;
         candCount++;
@@ -400,14 +439,7 @@ export class DifferentialTestOracle {
           pairedCount++;
         }
       } else if (!firstError) {
-        const where = t.stress ? ' (on the large stress input)' : '';
-        firstError = !r.ok
-          ? `${r.error}${where}`
-          : !outputMatches
-            ? `return value did not match the original${where}`
-            : !stdoutMatches
-              ? `printed output did not match the original${where}`
-              : `the arguments were left in a different state than the original leaves them${where}`;
+        firstError = `${check.reason}${t.stress ? ' (on the large stress input)' : ''}`;
       }
     });
 
@@ -427,6 +459,60 @@ export class DifferentialTestOracle {
 
     return { acc, speedup, avgTimeMs, baselineTimeMs, error: correct ? undefined : firstError };
   }
+}
+
+export interface CaseComparison {
+  split: 'public' | 'private';
+  stress: boolean;
+  /** Short, human-readable renderings for display. */
+  input: string;
+  expected: string;
+  actual: string | null;
+  match: boolean;
+  reason?: string;
+  originalMs: number | null;
+  candidateMs: number | null;
+}
+
+/** Whether a call result behaves identically to the ground truth — the single definition of
+ *  "correct" used both for scoring and for the Compare view. */
+function checkCase(r: CallResult, t: OracleTestCase): { match: boolean; reason: string } {
+  if (!r.ok) return { match: false, reason: r.error ?? 'raised an error' };
+  const expected = t.expected;
+  if (!deepAlmostEqual(r.output, expected.output)) return { match: false, reason: 'return value did not match the original' };
+  if ((r.stdout ?? '').trimEnd() !== expected.stdout.trimEnd()) {
+    return { match: false, reason: 'printed output did not match the original' };
+  }
+  if (!deepAlmostEqual(r.argsAfter ?? null, expected.argsAfter ?? null)) {
+    return { match: false, reason: 'the arguments were left in a different state than the original leaves them' };
+  }
+  return { match: true, reason: '' };
+}
+
+/** Compact display form of a value: long lists are elided, canonical sets/dicts shown naturally. */
+export function previewValue(v: unknown, depth = 0): string {
+  if (v === null || v === undefined) return 'None';
+  if (typeof v === 'string') return JSON.stringify(v.length > 40 ? `${v.slice(0, 37)}...` : v);
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) {
+    if (depth > 2) return '[…]';
+    const shown = v.slice(0, 6).map((x) => previewValue(x, depth + 1));
+    return `[${shown.join(', ')}${v.length > 6 ? `, … (${v.length} items)` : ''}]`;
+  }
+  const o = v as Record<string, unknown>;
+  if (Array.isArray(o.__set__)) return `set${previewValue(o.__set__, depth).replace(/^\[/, '{').replace(/\]$/, '}')}`;
+  const entries = Object.entries(o).slice(0, 4).map(([k, x]) => `${JSON.stringify(k)}: ${previewValue(x, depth + 1)}`);
+  return `{${entries.join(', ')}${Object.keys(o).length > 4 ? ', …' : ''}}`;
+}
+
+function previewArgs(args: unknown[]): string {
+  return `(${args.map((a) => previewValue(a)).join(', ')})`;
+}
+
+function previewBehaviour(output: unknown, stdout: string): string {
+  const out = previewValue(output);
+  const printed = stdout.trim();
+  return printed ? `${out}  · prints ${JSON.stringify(printed.length > 40 ? `${printed.slice(0, 37)}...` : printed)}` : out;
 }
 
 /** Coarse type of a JSON value, with list element types folded in: `[1, 2.5]` -> "list<num>",
