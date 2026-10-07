@@ -1,0 +1,44 @@
+### Analysis
+
+The provided function `has_duplicate` uses a nested loop to compare each element in the vector with every other element. This approach results in a time complexity of \(O(n^2)\), where \(n\) is the number of elements in the vector. This is because for each element, the function compares it with all other elements in the vector.
+
+### Opportunities for Optimization
+
+1. **Early Exit**: If we find a duplicate during the comparison of one element with another, we can return `true` immediately. This can reduce the number of iterations and improve performance.
+2. **Use a Set**: Instead of using nested loops, we can use a set to keep track of seen elements. This approach ensures that each element is only compared once, reducing the time complexity to \(O(n)\).
+
+### Explanation
+
+Here's the optimized version of the function using a set:
+
+```cpp
+#include <vector>
+#include <set>
+
+bool has_duplicate(std::vector<int> numbers) {
+    std::set<int> seen;
+
+    for (int number : numbers) {
+        if (seen.find(number) != seen.end()) {
+            return true;
+        }
+        seen.insert(number);
+    }
+
+    return false;
+}
+```
+
+### Explanation of the Optimizations
+
+1. **Early Exit**:
+   - Before starting the nested loop, we initialize an empty set `seen`.
+   - As we iterate through the vector, we check if the current number is already in the set using `seen.find(number)`.
+   - If the number is found, we return `true` immediately.
+   - If the number is not found, we insert the number into the set using `seen.insert(number)`.
+
+2. **Use a Set**:
+   - By using a set, we can efficiently check if an element has been seen before without having to iterate through the set for each element.
+   - This reduces the time complexity from \(O(n^2)\) to \(O(n)\).
+
+This optimization significantly improves the performance of the function, especially for large input sizes.

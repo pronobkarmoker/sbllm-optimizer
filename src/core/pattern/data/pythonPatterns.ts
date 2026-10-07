@@ -15,7 +15,7 @@ import type { Pattern } from '../patternBase.js';
  * ("patterns use a DIFFERENT example function with its own name and parameters — never adopt
  * them") actually coherent, and lets the arity guard in differential.ts catch a copied signature.
  */
-export const pythonPatterns: Pattern[] = [
+export const pythonPatterns: Omit<Pattern, 'source'>[] = [
   {
     id: 'set-membership',
     tags: ['membership', 'in', 'list', 'set', 'lookup', 'contains'],

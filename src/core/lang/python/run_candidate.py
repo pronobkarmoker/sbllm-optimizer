@@ -18,11 +18,59 @@ TARGET_TIMING_DURATION_S = 0.15    # aim to spend at least this long in the batc
 SLOW_CALL_THRESHOLD_MS = 100       # above this, a call is already slow enough that few repeats suffice
 MAX_REPEATS = 5000                 # sanity cap for a pathologically fast function
 
+# The result line is tagged so the caller can find it even if the code under test wrote to the real
+# stdout (e.g. `print(..., end="")` at module level), which would otherwise share a line with it.
+RESULT_MARKER = '__SBLLM_RESULT__'
+
+# The real stdout, captured before any user code runs: user code may rebind or close sys.stdout.
+_REAL_STDOUT = sys.stdout
+
+
+def emit(obj):
+    _REAL_STDOUT.write('\n' + RESULT_MARKER + json.dumps(obj) + '\n')
+    _REAL_STDOUT.flush()
+
+
+def to_jsonable(value, depth=0):
+    """Canonical, JSON-safe form of a return value, so two processes agree on it.
+
+    Sets used to fall back to repr(), and str hashing is randomized per process, so a function
+    returning {'apple', 'banana'} printed its elements in a different order every run and failed
+    against its own ground truth. Sets are now emitted sorted; tuples become lists (as JSON would);
+    dicts with non-string keys become sorted [key, value] pairs.
+    """
+    if depth > 50:
+        return repr(value)
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float('inf'), float('-inf')):
+            return repr(value)
+        return value
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(v, depth + 1) for v in value]
+    if isinstance(value, (set, frozenset)):
+        items = [to_jsonable(v, depth + 1) for v in value]
+        return {'__set__': sorted(items, key=lambda v: json.dumps(v, sort_keys=True))}
+    if isinstance(value, dict):
+        if all(isinstance(k, str) for k in value):
+            return {k: to_jsonable(v, depth + 1) for k, v in value.items()}
+        pairs = [[to_jsonable(k, depth + 1), to_jsonable(v, depth + 1)] for k, v in value.items()]
+        return {'__dict__': sorted(pairs, key=lambda p: json.dumps(p[0], sort_keys=True))}
+    # Anything else (custom objects, generators, numpy arrays...) — iterables are materialized when
+    # that's safe; everything else is compared by repr().
+    try:
+        if hasattr(value, 'tolist'):
+            return to_jsonable(value.tolist(), depth + 1)
+    except Exception:
+        pass
+    return repr(value)
+
 
 def timed_call(func, args):
-    # Exactly one call is used for correctness (return value + printed output) — on a fresh deep
-    # copy of args, since some candidates sort/mutate their input in place, and the caller compares
-    # this against ground truth captured the same way.
+    # Exactly one call is used for correctness (return value + printed output + the arguments' state
+    # afterwards) — on a fresh deep copy of args, since some candidates sort/mutate their input in
+    # place, and the caller compares this against ground truth captured the same way.
     buf = io.StringIO()
     call_args = copy.deepcopy(args)
     t0 = time.perf_counter()
@@ -30,6 +78,7 @@ def timed_call(func, args):
         output = func(*call_args)
     first_call_ms = (time.perf_counter() - t0) * 1000
     stdout_text = buf.getvalue()
+    args_after = call_args
 
     remaining_budget_s = max(0.05, MAX_TOTAL_TRIAL_TIME_S - first_call_ms / 1000)
 
@@ -53,7 +102,7 @@ def timed_call(func, args):
                 with contextlib.redirect_stdout(io.StringIO()):
                     func(*call_args)
                 times.append((time.perf_counter() - t0) * 1000)
-            return output, stdout_text, statistics.median(times)
+            return output, stdout_text, args_after, statistics.median(times)
 
         # Fast call: batch many repeats (timeit-style) so per-call measurement noise averages out.
         # Each repeat gets its own deep-copied args, prepared up front so the copying itself isn't
@@ -73,19 +122,26 @@ def timed_call(func, args):
         batch_elapsed_ms = (time.perf_counter() - batch_start) * 1000
 
         avg_ms = (batch_elapsed_ms / count) if count > 0 else first_call_ms
-        return output, stdout_text, avg_ms
+        return output, stdout_text, args_after, avg_ms
     finally:
         if gc_was_enabled:
             gc.enable()
 
 
 def load_func(code, func_name, label):
-    namespace = {}
-    exec(compile(code, label, 'exec'), namespace)
+    namespace = {'__name__': '__sbllm_' + label.strip('<>') + '__'}
+    # Module-level code in the file context may print; that output is not part of the function's
+    # behaviour and must not reach the real stdout.
+    with contextlib.redirect_stdout(io.StringIO()):
+        exec(compile(code, label, 'exec'), namespace)
     func = namespace.get(func_name)
     if func is None or not callable(func):
         raise NameError('function {} not found or not callable'.format(func_name))
     return func
+
+
+def describe(e):
+    return '{}: {}'.format(type(e).__name__, e)
 
 
 def main():
@@ -95,10 +151,12 @@ def main():
     inputs = payload['inputs']
     baseline_code = payload.get('baselineCode')
 
+    # BaseException, not Exception: a candidate calling sys.exit() or raising KeyboardInterrupt
+    # used to kill this process without printing anything, and that aborted the whole search.
     try:
         func = load_func(code, func_name, '<candidate>')
-    except Exception as e:
-        print(json.dumps({'compileError': '{}: {}'.format(type(e).__name__, e)}))
+    except BaseException as e:
+        emit({'compileError': describe(e)})
         return
 
     # Loaded into a SEPARATE namespace so its function of the same name doesn't get overwritten
@@ -108,44 +166,43 @@ def main():
     # afterward is measured minutes later in its own separate process launch. If system conditions
     # drift over the session (background load, thermal state, whatever), that's not symmetric
     # noise around the true ratio — it's a directional bias, since only one side of the comparison
-    # drifts. Measuring both together, in the same process, at the same moment, cancels that out:
-    # if the whole machine is 10% slower right now, both sides are equally affected and the RATIO
-    # stays accurate even though neither absolute number is exactly what it "should" be.
+    # drifts. Measuring both together, in the same process, at the same moment, cancels that out.
     baseline_func = None
     if baseline_code:
         try:
             baseline_func = load_func(baseline_code, func_name, '<baseline>')
-        except Exception:
+        except BaseException:
             baseline_func = None
 
     results = []
     for args in inputs:
         start = time.perf_counter()
         try:
-            output, stdout_text, avg_ms = timed_call(func, args)
-            try:
-                json.dumps(output)
-            except TypeError:
-                output = repr(output)
-            # A function's printed output is part of its observable behavior — many real
-            # functions (like ones that only print(), never return) communicate ONLY this way.
-            # Comparing return values alone would call two candidates "equal" even when their
-            # printed output completely differs.
-            entry = {'ok': True, 'output': output, 'stdout': stdout_text, 'timeMs': avg_ms}
+            output, stdout_text, args_after, avg_ms = timed_call(func, args)
+            # A function's printed output and its effect on mutable arguments are part of its
+            # observable behaviour — comparing return values alone would call an in-place sort
+            # that returns None "equal" to one that does nothing at all.
+            entry = {
+                'ok': True,
+                'output': to_jsonable(output),
+                'stdout': stdout_text,
+                'argsAfter': to_jsonable(args_after),
+                'timeMs': avg_ms,
+            }
 
             if baseline_func is not None:
                 try:
-                    _, _, baseline_ms = timed_call(baseline_func, args)
+                    _, _, _, baseline_ms = timed_call(baseline_func, args)
                     entry['baselineTimeMs'] = baseline_ms
-                except Exception:
+                except BaseException:
                     pass  # a baseline re-run hiccup shouldn't fail the candidate's own evaluation
 
             results.append(entry)
-        except Exception as e:
+        except BaseException as e:
             elapsed = (time.perf_counter() - start) * 1000
-            results.append({'ok': False, 'error': '{}: {}'.format(type(e).__name__, e), 'timeMs': elapsed})
+            results.append({'ok': False, 'error': describe(e), 'timeMs': elapsed})
 
-    print(json.dumps({'results': results}))
+    emit({'results': results})
 
 
 if __name__ == '__main__':

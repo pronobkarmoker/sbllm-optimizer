@@ -4,114 +4,256 @@ import { CppAdapter } from '../lang/cppAdapter.js';
 import type { LanguageAdapter, LanguageId } from '../lang/languageAdapter.js';
 import { DifferentialTestOracle } from '../fitness/testOracle/differential.js';
 import { FitnessEvaluator } from '../fitness/fitnessEvaluator.js';
-import { PatternRetriever } from '../pattern/patternRetriever.js';
+import { PatternRetriever, type RetrievedPatterns } from '../pattern/patternRetriever.js';
 import { buildInitialPrompt, buildIterationPrompt, parseGoCotResponse } from '../prompt/goCotPromptBuilder.js';
-import type { Candidate } from '../fitness/types.js';
+import type { Candidate, VerifiedCandidate } from '../fitness/types.js';
+import type { Prompt } from '../llm/llmProvider.js';
+import { CancelledError, isAbortError } from '../util/abort.js';
+import { DegenerateOutputError } from '../llm/llmProvider.js';
+import { repairCandidate } from './candidateRepair.js';
 
 export interface OptimizerOptions {
-  /** Representative sample count (Ns in the paper). Defaults to 3, matching the paper's own tuned
-   *  optimum (§IV-D, Fig. 7) — their ablation shows both smaller and larger Ns measurably
-   *  underperform this. An earlier version of this code retuned it down to 2 for "interactive
-   *  latency," but that wasn't grounded in anything and just made the search worse; now that
-   *  refineFurther() exists as a way to add more search on demand, there's no good reason to start
-   *  below the paper's proven peak. */
+  /** Representative sample count (Ns). Default 3 — the paper's tuned optimum (§IV-D, Fig. 7). */
   ns?: number;
-  /** Defaults to 4, same reasoning — the paper's own tuned optimum, not an arbitrary retuning. */
+  /** Maximum evolutionary iterations. Default 4 — the paper's tuned optimum. */
   maxIterations?: number;
-  /** Candidates sampled per iteration (the paper's `generation_number`; run.sh uses 4). Lowering
-   *  it to 1 makes a run ~4x faster but degrades the search into a linear chain — the pool never
-   *  grows past Ns, so representative selection has nothing to choose between and crossover has no
-   *  distinct methods to combine. Exposed as a setting because a slow local model makes the
-   *  paper-faithful default genuinely expensive in an interactive editor. */
+  /** Candidates sampled per generation (the reference run.sh's generation_number = 4). Also the
+   *  size of the initial population. Lowering it to 1 degrades the search into a linear chain. */
   generationNumber?: number;
+  /** Minimum verified speedup for a result to count as an optimization. Default 1.1 — the paper's
+   *  OPT metric only counts code "at least 10% faster" (§III-D), which also keeps measurement noise
+   *  from being presented as an improvement. */
+  minSpeedup?: number;
+  /** How many of the top public-ranked candidates are re-verified on the private tests (the
+   *  paper reports Top-1/3/5). Default 3. */
+  topK?: number;
   onProgress?: (msg: string) => void;
+  /** Called after every evaluated candidate, for live UI updates. */
+  onCandidate?: (candidate: Candidate) => void;
   signal?: AbortSignal;
-  /** Everything the target function depends on but doesn't define itself — imports, module-level
-   *  constants, earlier helper functions in the same file. Prepended when executing (so functions
-   *  with real-world file dependencies actually run) and shown to the LLM as available context it
-   *  must not redefine. Ignored on refineFurther() — only meaningful when building a fresh oracle. */
+  /** Everything above the target function in its file. Reduced to side-effect-free statements
+   *  (imports, definitions, constants) before use. Only read by optimize(). */
   contextPrefix?: string;
 }
 
+export type StopReason = 'converged' | 'max-iterations' | 'cancelled' | 'model-error';
+
+export interface IterationRecord {
+  iteration: number;
+  representativeIds: number[];
+  similarPattern?: string;
+  differentPattern?: string;
+  newCandidateIds: number[];
+}
+
 export interface OptimizerResult {
-  best: Candidate;
+  /** Best finalist that is correct on the held-out private tests, or null when none is. */
+  best: VerifiedCandidate | null;
+  /** True when `best` is correct AND at least `minSpeedup` faster — the only case in which the
+   *  extension offers to apply it. */
+  improved: boolean;
+  minSpeedup: number;
+  /** Top-k public candidates re-measured on the private tests, best first. */
+  finalists: VerifiedCandidate[];
   baselineTimeMs: number;
+  /** Every candidate evaluated this session, in order (index === id). */
   history: Candidate[];
+  iterations: IterationRecord[];
+  stopReason: StopReason;
   publicCount: number;
   privateCount: number;
+  contextSkipped: string[];
+}
+
+export interface OptimizerConfig {
+  scriptsDir: string;
+  language?: LanguageId;
+  pythonPath?: string;
+  cppCompiler?: string;
+  /** Optional external pattern file (JSON/JSONL), e.g. mined from PIE's training split. */
+  patternFile?: string;
 }
 
 function explanationOf(parsed: { analysis: string; opportunities: string; explanation: string }): string {
-  return [parsed.analysis, parsed.opportunities, parsed.explanation].filter(Boolean).join('\n\n');
+  return [parsed.analysis, parsed.opportunities, parsed.explanation].map((s) => s.trim()).filter(Boolean).join('\n\n');
 }
 
 /**
- * Ports Algorithm 2 (the evolutionary optimization process) from the paper. Stateful across calls:
- * `optimize()` builds a fresh test oracle and runs the initial search; `refineFurther()` reuses the
- * same oracle and candidate pool to keep iterating — this is what backs the "Refine Further" button,
- * so clicking it doesn't re-synthesize test inputs or throw away what's already been learned.
+ * Algorithm 2 of the paper (§II-E), the evolutionary optimization process:
+ *
+ *   Sol <- initial solutions for s_t                     (a CoT-generated population)
+ *   for i in 1..I:
+ *       RS_i <- Select(Sol); retrieve patterns P_i       (Algorithm 1)
+ *       if RS_i == RS_{i-1} and RS_i contains a correct solution: break
+ *       NC <- generate with the GO-COT prompt (RS_i, P_i)
+ *       Sol <- RS_i ∪ NC
+ *   re-rank Sol with the selection of Algorithm 1
+ *
+ * Stateful across calls: `optimize()` builds a fresh test oracle and runs the search;
+ * `refineFurther()` keeps the same oracle and population and continues iterating — this backs the
+ * "Refine Further" button.
  */
 export class EvolutionaryOptimizer {
-  private readonly adapter: LanguageAdapter;
+  readonly adapter: LanguageAdapter;
   private readonly fitness: FitnessEvaluator;
   private readonly patterns: PatternRetriever;
-  private readonly language: LanguageId;
+  readonly language: LanguageId;
 
   private slowCode = '';
   private contextPrefix = '';
+  private contextSkipped: string[] = [];
   private oracle: DifferentialTestOracle | null = null;
-  private pool: Candidate[] = [];
+  /** The current population Sol. */
+  private sol: Candidate[] = [];
+  private history: Candidate[] = [];
+  private iterations: IterationRecord[] = [];
+  private iterationCounter = 0;
   private previousRepresentativeKey: string | null = null;
 
   constructor(
     private readonly llm: LLMProvider,
-    opts: { scriptsDir: string; language?: LanguageId },
+    config: OptimizerConfig,
   ) {
-    // The paper covers Python and C++ (986 and 994 test samples respectively); everything below
-    // this line is language-independent and talks only to the LanguageAdapter interface.
-    this.language = opts.language ?? 'python';
-    this.adapter = this.language === 'cpp' ? new CppAdapter() : new PythonAdapter(opts.scriptsDir);
+    this.language = config.language ?? 'python';
+    this.adapter =
+      this.language === 'cpp'
+        ? new CppAdapter({ compiler: config.cppCompiler })
+        : new PythonAdapter(config.scriptsDir, { pythonPath: config.pythonPath });
     this.fitness = new FitnessEvaluator(this.adapter);
-    this.patterns = new PatternRetriever(this.language);
+    this.patterns = new PatternRetriever(this.adapter, { externalFile: config.patternFile });
+  }
+
+  get hasSession(): boolean {
+    return this.oracle !== null;
   }
 
   async optimize(slowCode: string, opts: OptimizerOptions = {}): Promise<OptimizerResult> {
     const log = opts.onProgress ?? (() => {});
+    const generationNumber = opts.generationNumber ?? 4;
 
-    const contextPrefix = opts.contextPrefix ?? '';
+    const funcName = this.adapter.extractFunctionName(slowCode);
+    if (!funcName) throw new Error('No function definition found in the selected code.');
+    if (this.adapter instanceof CppAdapter) {
+      const unsupported = this.adapter.checkSupported(slowCode, funcName);
+      if (unsupported) throw new Error(`This C++ function can't be benchmarked yet: ${unsupported}.`);
+    }
 
-    log('Building differential test oracle from the original code...');
-    const oracle = await DifferentialTestOracle.build(this.llm, this.adapter, slowCode, { contextPrefix });
-    log(`Oracle ready: ${oracle.publicCount} public / ${oracle.privateCount} private test case(s).`);
+    const prepared = await this.adapter.prepareContext(opts.contextPrefix ?? '');
+    if (prepared.skipped.length > 0) {
+      log(`Context: skipped ${prepared.skipped.length} top-level statement(s) with side effects (${prepared.skipped.slice(0, 3).join('; ')}${prepared.skipped.length > 3 ? '; …' : ''}).`);
+    }
 
-    log('Generating seed candidate (no history yet)...');
-    const seedResponse = await this.llm.generate(buildInitialPrompt(this.language, slowCode, contextPrefix), { signal: opts.signal });
-    const seedParsed = parseGoCotResponse(seedResponse.text);
-    const seedFitness = await oracle.evaluatePublic(seedParsed.code);
-    log(
-      `Seed: acc=${seedFitness.acc.toFixed(2)} speedup=${seedFitness.speedup.toFixed(2)}x` +
-        (seedFitness.error ? ` error=${seedFitness.error}` : ''),
-    );
+    log('Generating test inputs and capturing the original function’s behaviour…');
+    const oracle = await DifferentialTestOracle.build(this.llm, this.adapter, slowCode, {
+      contextPrefix: prepared.code,
+      signal: opts.signal,
+      onProgress: log,
+    });
+    log(`Test oracle ready: ${oracle.publicCount} public / ${oracle.privateCount} private test case(s).`);
 
     this.slowCode = slowCode;
-    this.contextPrefix = contextPrefix;
+    this.contextPrefix = prepared.code;
+    this.contextSkipped = prepared.skipped;
     this.oracle = oracle;
-    this.pool = [{ code: seedParsed.code, explanation: explanationOf(seedParsed), ...seedFitness }];
+    this.sol = [];
+    this.history = [];
+    this.iterations = [];
+    this.iterationCounter = 0;
     this.previousRepresentativeKey = null;
+
+    log(`Initial population: generating ${generationNumber} chain-of-thought candidate(s)…`);
+    const seeds = await this.generateCandidates(
+      buildInitialPrompt(this.language, slowCode, prepared.code),
+      generationNumber,
+      0,
+      opts,
+    );
+    this.sol = seeds;
+    if (seeds.length === 0) {
+      if (opts.signal?.aborted) throw new CancelledError();
+      throw new Error('The model did not produce any usable candidate for the initial population.');
+    }
 
     return this.runIterationsAndFinalize(opts);
   }
 
   async refineFurther(opts: OptimizerOptions = {}): Promise<OptimizerResult> {
-    if (!this.oracle) {
-      throw new Error('refineFurther() called before optimize() — no active session.');
-    }
-    // Without this reset, the convergence check below sees "representative set unchanged since
-    // last time" as true on its very first comparison (nothing new has run yet) and immediately
-    // declares convergence before generating a single new candidate — refineFurther() would
-    // silently no-op and just hand back the same result.
+    if (!this.oracle) throw new Error('refineFurther() called before optimize() — no active session.');
+    // Without this reset, the convergence check sees "representative set unchanged" on its first
+    // comparison and stops before generating anything.
     this.previousRepresentativeKey = null;
     return this.runIterationsAndFinalize(opts);
+  }
+
+  /** Samples `count` responses for one prompt and evaluates each on the public tests. LLM and
+   *  parsing failures skip that sample; cancellation stops early. Identical code is not
+   *  re-added (its fitness is already known). */
+  private async generateCandidates(prompt: Prompt, count: number, iteration: number, opts: OptimizerOptions): Promise<Candidate[]> {
+    const log = opts.onProgress ?? (() => {});
+    const oracle = this.oracle!;
+    const out: Candidate[] = [];
+    let lastLlmError: Error | null = null;
+    const label = iteration === 0 ? 'Seed' : `Iteration ${iteration}`;
+
+    for (let g = 0; g < count; g++) {
+      if (opts.signal?.aborted) break;
+      let text: string;
+      try {
+        text = (await this.llm.generate(prompt, { signal: opts.signal })).text;
+      } catch (err) {
+        if (isAbortError(err, opts.signal)) break;
+        if (err instanceof DegenerateOutputError) {
+          // An unusable sample, not a broken connection — don't let it count as a model failure.
+          log(`${label}.${g + 1}: the model got stuck repeating itself; stopped it early and skipped this sample.`);
+          continue;
+        }
+        lastLlmError = err as Error;
+        log(`${label}.${g + 1}: the model call failed — ${(err as Error).message}`);
+        continue;
+      }
+
+      let parsed: ReturnType<typeof parseGoCotResponse>;
+      try {
+        parsed = parseGoCotResponse(text);
+      } catch {
+        log(`${label}.${g + 1}: the response contained no usable code, skipping.`);
+        continue;
+      }
+
+      const repaired = await repairCandidate(parsed.code, {
+        adapter: this.adapter,
+        funcName: oracle.funcName,
+        arity: oracle.paramCount,
+        contextPrefix: this.contextPrefix,
+      });
+      if (repaired.notes.length > 0) log(`${label}.${g + 1}: auto-repaired — ${repaired.notes.join('; ')}.`);
+      const code = repaired.code;
+
+      const existing = [...this.history].find((c) => c.code.trim() === code.trim());
+      if (existing) {
+        log(`${label}.${g + 1}: identical to #${existing.id}, skipping.`);
+        continue;
+      }
+
+      const f = await oracle.evaluatePublic(code);
+      const candidate: Candidate = {
+        id: this.history.length,
+        code,
+        explanation: explanationOf(parsed),
+        iteration,
+        ...f,
+      };
+      this.history.push(candidate);
+      out.push(candidate);
+      opts.onCandidate?.(candidate);
+      log(
+        `${label}.${g + 1} → #${candidate.id}: ` +
+          (f.acc === 1 ? `correct, ${f.speedup.toFixed(2)}x` : `acc=${f.acc.toFixed(2)}${f.error ? ` (${f.error})` : ''}`),
+      );
+    }
+
+    if (out.length === 0 && lastLlmError && !opts.signal?.aborted) throw lastLlmError;
+    return out;
   }
 
   private async runIterationsAndFinalize(opts: OptimizerOptions): Promise<OptimizerResult> {
@@ -119,75 +261,120 @@ export class EvolutionaryOptimizer {
     const maxIterations = opts.maxIterations ?? 4;
     const generationNumber = opts.generationNumber ?? 4;
     const log = opts.onProgress ?? (() => {});
-    const oracle = this.oracle!;
+    let stopReason: StopReason = 'max-iterations';
 
-    for (let iter = 1; iter <= maxIterations; iter++) {
+    for (let step = 1; step <= maxIterations; step++) {
       if (opts.signal?.aborted) {
-        log('Cancelled — stopping and reporting the best candidate found so far.');
+        stopReason = 'cancelled';
         break;
       }
+      const iteration = ++this.iterationCounter;
 
-      const representative = await this.fitness.selectRepresentative(this.pool, ns);
-      const representativeKey = representative.map((c) => c.code).join(' ');
-      const hasCorrect = representative.some((c) => c.acc === 1);
-
-      if (representativeKey === this.previousRepresentativeKey && hasCorrect) {
-        log(`Iteration ${iter}: representative samples unchanged and a correct candidate exists — converged.`);
+      const representative = await this.fitness.selectRepresentative(this.sol, ns);
+      const key = representative.map((c) => c.id).join(',');
+      if (key === this.previousRepresentativeKey && representative.some((c) => c.acc === 1)) {
+        log(`Iteration ${iteration}: representative samples unchanged and a correct solution exists — converged.`);
+        this.iterationCounter--;
+        stopReason = 'converged';
         break;
       }
-      this.previousRepresentativeKey = representativeKey;
+      this.previousRepresentativeKey = key;
 
-      const retrieved = this.patterns.retrieve(
-        this.slowCode,
-        representative.map((c) => c.code),
-      );
-      const prompt = buildIterationPrompt(this.language, this.slowCode, representative, retrieved, this.contextPrefix);
-
-      log(
-        `Iteration ${iter}: generating ${generationNumber} candidate(s) from ${representative.length} representative sample(s)...`,
-      );
-
-      // The paper generates MULTIPLE candidates per iteration (run.sh: generation_number=4), not
-      // one. That breadth is what makes the search evolutionary rather than a linear chain: the
-      // pool needs more members than Ns for representative selection to actually have anything to
-      // choose between, and it's what gives crossover distinct methods to combine. Sampling at
-      // temperature 0.7 (the paper's setting) is what makes repeated calls on the same prompt
-      // diverge.
-      for (let g = 0; g < generationNumber; g++) {
-        if (opts.signal?.aborted) break;
-
-        const response = await this.llm.generate(prompt, { signal: opts.signal });
-
-        let parsed: ReturnType<typeof parseGoCotResponse>;
-        try {
-          parsed = parseGoCotResponse(response.text);
-        } catch {
-          log(`Iteration ${iter}.${g + 1}: model response was not parseable, skipping.`);
-          continue;
-        }
-
-        const candidateFitness = await oracle.evaluatePublic(parsed.code);
-        this.pool.push({ code: parsed.code, explanation: explanationOf(parsed), ...candidateFitness });
-        log(
-          `Iteration ${iter}.${g + 1}: acc=${candidateFitness.acc.toFixed(2)} speedup=${candidateFitness.speedup.toFixed(2)}x` +
-            (candidateFitness.error ? ` error=${candidateFitness.error}` : ''),
+      let retrieved: RetrievedPatterns = { similar: null, different: null };
+      try {
+        retrieved = await this.patterns.retrieve(
+          this.slowCode,
+          representative.map((c) => c.code),
         );
+      } catch (err) {
+        log(`Pattern retrieval failed (${(err as Error).message}); continuing without patterns.`);
+      }
+      log(
+        `Iteration ${iteration}: RS = {${representative.map((c) => `#${c.id}`).join(', ')}}` +
+          (retrieved.similar ? `, similar pattern "${retrieved.similar.pattern.id}"` : '') +
+          (retrieved.different ? `, different pattern "${retrieved.different.pattern.id}"` : '') +
+          ` — generating ${generationNumber} candidate(s)…`,
+      );
+
+      const prompt = buildIterationPrompt(this.language, this.slowCode, representative, retrieved, this.contextPrefix);
+      let fresh: Candidate[] = [];
+      try {
+        fresh = await this.generateCandidates(prompt, generationNumber, iteration, opts);
+      } catch (err) {
+        // Every model call in this iteration failed (and not by cancellation): stop the search but
+        // still report what was found so far.
+        log(`Stopping: ${(err as Error).message}`);
+        stopReason = 'model-error';
+        this.iterations.push({ iteration, representativeIds: representative.map((c) => c.id), newCandidateIds: [] });
+        break;
+      }
+
+      this.iterations.push({
+        iteration,
+        representativeIds: representative.map((c) => c.id),
+        similarPattern: retrieved.similar?.pattern.id,
+        differentPattern: retrieved.different?.pattern.id,
+        newCandidateIds: fresh.map((c) => c.id),
+      });
+      // Algorithm 2, line 9: Sol <- RS_i ∪ NC.
+      this.sol = [...representative, ...fresh];
+
+      if (opts.signal?.aborted) {
+        stopReason = 'cancelled';
+        break;
       }
     }
 
-    const ranked = await this.fitness.selectRepresentative(this.pool, this.pool.length);
-    const bestOnPublic = ranked[0] ?? this.pool[0];
+    if (stopReason === 'cancelled' && opts.signal?.aborted) {
+      log('Cancelled — verifying and reporting the best candidate found so far.');
+    }
+    return this.finalize(opts, stopReason);
+  }
 
-    log('Verifying the best candidate against held-out private test cases...');
-    const privateFitness = await oracle.evaluatePrivate(bestOnPublic.code);
-    const best: Candidate = { code: bestOnPublic.code, explanation: bestOnPublic.explanation, ...privateFitness };
+  private async finalize(opts: OptimizerOptions, stopReason: StopReason): Promise<OptimizerResult> {
+    const log = opts.onProgress ?? (() => {});
+    const oracle = this.oracle!;
+    const minSpeedup = opts.minSpeedup ?? 1.1;
+    const topK = opts.topK ?? 3;
+
+    // Algorithm 2, line 11: re-rank Sol with the selection part of Algorithm 1. Only candidates that
+    // were fully correct on the public tests are eligible — a candidate that failed them must never
+    // become "best" just because it happens to pass a small private set.
+    const ranked = await this.fitness.selectRepresentative(this.sol, this.sol.length);
+    const eligible = ranked.filter((c) => c.acc === 1).slice(0, topK);
+
+    const finalists: VerifiedCandidate[] = [];
+    if (eligible.length > 0) {
+      log(`Verifying the top ${eligible.length} candidate(s) on ${oracle.privateCount} held-out private test case(s)…`);
+    }
+    for (const c of eligible) {
+      const priv = await oracle.evaluatePrivate(c.code);
+      finalists.push({ ...c, ...priv, publicAcc: c.acc, publicSpeedup: c.speedup });
+    }
+    finalists.sort((a, b) => Number(b.acc === 1) - Number(a.acc === 1) || b.speedup - a.speedup);
+
+    const best = finalists.find((f) => f.acc === 1) ?? null;
+    const improved = best !== null && best.speedup >= minSpeedup;
+    if (!best) {
+      log('No candidate was correct on both the public and the private tests.');
+    } else if (!improved) {
+      log(`Best correct candidate is #${best.id} at ${best.speedup.toFixed(2)}x — below the ${minSpeedup}x threshold, so it is not offered as an optimization.`);
+    } else {
+      log(`Best: #${best.id}, ${best.speedup.toFixed(2)}x faster on the held-out tests.`);
+    }
 
     return {
       best,
+      improved,
+      minSpeedup,
+      finalists,
       baselineTimeMs: oracle.baselineTimeMs,
-      history: [...this.pool],
+      history: [...this.history],
+      iterations: [...this.iterations],
+      stopReason,
       publicCount: oracle.publicCount,
       privateCount: oracle.privateCount,
+      contextSkipped: this.contextSkipped,
     };
   }
 }

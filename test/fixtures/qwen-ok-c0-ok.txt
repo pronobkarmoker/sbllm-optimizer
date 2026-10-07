@@ -1,0 +1,42 @@
+### Analysis
+
+The given function `has_duplicate` checks for duplicate elements in a vector using two nested loops. This results in a time complexity of \(O(n^2)\), where \(n\) is the size of the vector. This is inefficient for large inputs, as it checks each pair of elements to see if they are the same.
+
+### Opportunities
+
+1. **Use a Set for Efficient Lookup**: A `std::set` can store unique elements, which allows us to check for duplicates efficiently in constant time \(O(\log n)\) using the `std::set::find` function.
+2. **Early Exit**: If we find a duplicate, we can exit the inner loop early to avoid unnecessary comparisons.
+
+### Explanation
+
+We will modify the function to use a `std::set` and add a check to exit the inner loop if a duplicate is found. This will reduce the time complexity to \(O(n \log n)\), making it significantly faster for large vectors.
+
+### Optimized Code
+
+```cpp
+#include <vector>
+#include <set>
+#include <algorithm>
+
+bool has_duplicate(std::vector<int> numbers) {
+    // Create a set from the vector
+    std::set<int> unique_numbers(numbers.begin(), numbers.end());
+    
+    // Check if the size of the set is less than the original size
+    if (unique_numbers.size() < numbers.size()) {
+        return true;
+    }
+    
+    return false;
+}
+```
+
+### Explanation of Changes
+
+1. **Using `std::set`**: We create a `std::set` from the input vector. This automatically removes any duplicate elements.
+2. **Early Exit**: After creating the set, we compare the size of the set with the size of the original vector. If they are different, it means there were duplicates, and we return `true`.
+3. **No Additional Complexity**: The rest of the function remains unchanged, as it still iterates through the original vector to check for duplicates.
+
+### Summary
+
+By using a `std::set` to store unique elements and checking the size of the set before proceeding, we reduce the time complexity of the function from \(O(n^2)\) to \(O(n \log n)\), making it much more efficient for large inputs.

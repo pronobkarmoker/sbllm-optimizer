@@ -1,8 +1,8 @@
 {
   "name": "sbllm-optimizer",
   "displayName": "SBLLM Optimizer",
-  "description": "Search-based LLM code optimization for Python and C++ — generates multiple candidate optimizations, verifies each by actually running it, and iteratively evolves toward a faster, correct solution.",
-  "version": "0.3.0",
+  "description": "Search-based LLM code optimization for Python and C++ (SBLLM, ICSE'25) — finds inefficient code, generates candidate optimizations, verifies each by running it, and evolves toward a faster, correct solution.",
+  "version": "0.4.0",
   "author": {
     "name": "Pronob Karmoker",
     "url": "https://github.com/pronobkarmoker"
@@ -31,28 +31,42 @@
     "Machine Learning"
   ],
   "keywords": [
-    "python",
-    "performance",
-    "optimization",
-    "refactoring",
-    "llm",
     "ai",
-    "ollama",
-    "gemini",
-    "code speedup",
-    "profiling",
     "c++",
-    "cpp"
+    "code smell",
+    "code speedup",
+    "cpp",
+    "gemini",
+    "llm",
+    "ollama",
+    "openai",
+    "optimization",
+    "performance",
+    "profiling",
+    "python",
+    "refactoring",
+    "search-based",
+    "static analysis"
   ],
   "galleryBanner": {
     "color": "#0F141E",
     "theme": "dark"
   },
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:python",
+    "onLanguage:cpp"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
-      "supported": true,
-      "description": "Commands and the insights panel work in any workspace. Actually running your code (and AI-generated variants of it) to measure performance requires a trusted workspace, and you'll be prompted to trust it at that point."
+      "supported": "limited",
+      "description": "Static analysis and the insights panel work in any workspace. Running your code (and AI-generated variants of it) to measure performance requires a trusted workspace. Interpreter, compiler, pattern-file and endpoint settings from an untrusted workspace are ignored.",
+      "restrictedConfigurations": [
+        "sbllmOptimizer.pythonPath",
+        "sbllmOptimizer.cppCompiler",
+        "sbllmOptimizer.patternFile",
+        "sbllmOptimizer.ollamaHost",
+        "sbllmOptimizer.openaiBaseUrl"
+      ]
     }
   },
   "main": "./dist/extension.cjs",
@@ -61,24 +75,85 @@
     "commands": [
       {
         "command": "sbllmOptimizer.optimizeSelection",
-        "title": "SBLLM: Optimize Selected Code",
+        "title": "Optimize Selected Code",
+        "category": "SBLLM",
         "icon": "$(zap)"
       },
       {
+        "command": "sbllmOptimizer.optimizeFunction",
+        "title": "Optimize Function",
+        "category": "SBLLM"
+      },
+      {
+        "command": "sbllmOptimizer.analyzeFile",
+        "title": "Analyze File for Performance Issues",
+        "category": "SBLLM",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sbllmOptimizer.showHistory",
+        "title": "Show Optimization History",
+        "category": "SBLLM",
+        "icon": "$(history)"
+      },
+      {
+        "command": "sbllmOptimizer.applyBest",
+        "title": "Apply Best Result",
+        "category": "SBLLM"
+      },
+      {
+        "command": "sbllmOptimizer.cancel",
+        "title": "Cancel Optimization",
+        "category": "SBLLM"
+      },
+      {
         "command": "sbllmOptimizer.setGeminiApiKey",
-        "title": "SBLLM: Set Gemini API Key"
+        "title": "Set Gemini API Key",
+        "category": "SBLLM"
+      },
+      {
+        "command": "sbllmOptimizer.setOpenAIApiKey",
+        "title": "Set OpenAI API Key",
+        "category": "SBLLM"
       },
       {
         "command": "sbllmOptimizer.diagnoseConnection",
-        "title": "SBLLM: Diagnose Connection"
+        "title": "Diagnose Ollama Connection",
+        "category": "SBLLM"
       }
     ],
     "menus": {
       "editor/context": [
         {
           "command": "sbllmOptimizer.optimizeSelection",
-          "when": "(editorLangId == python || editorLangId == cpp) && editorHasSelection",
-          "group": "1_modification"
+          "when": "editorLangId == python || editorLangId == cpp",
+          "group": "1_modification@90"
+        },
+        {
+          "command": "sbllmOptimizer.analyzeFile",
+          "when": "editorLangId == python || editorLangId == cpp",
+          "group": "1_modification@91"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "sbllmOptimizer.optimizeSelection",
+          "when": "editorLangId == python || editorLangId == cpp",
+          "group": "navigation@90"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sbllmOptimizer.optimizeFunction",
+          "when": "false"
+        },
+        {
+          "command": "sbllmOptimizer.optimizeSelection",
+          "when": "editorLangId == python || editorLangId == cpp"
+        },
+        {
+          "command": "sbllmOptimizer.analyzeFile",
+          "when": "editorLangId == python || editorLangId == cpp"
         }
       ]
     },
@@ -89,10 +164,17 @@
           "type": "string",
           "enum": [
             "ollama",
-            "gemini"
+            "gemini",
+            "openai"
           ],
           "default": "ollama",
-          "description": "Which LLM backend to use. Ollama runs fully local and free; Gemini needs an API key set via \"SBLLM: Set Gemini API Key\"."
+          "enumDescriptions": [
+            "Local models via Ollama — free and private.",
+            "Google Gemini — needs \"SBLLM: Set Gemini API Key\".",
+            "OpenAI or any OpenAI-compatible server — needs \"SBLLM: Set OpenAI API Key\" (or a base URL for a local server)."
+          ],
+          "description": "Which LLM backend to use.",
+          "order": 0
         },
         "sbllmOptimizer.ollamaHost": {
           "type": "string",
@@ -114,21 +196,73 @@
           "default": 4,
           "minimum": 1,
           "maximum": 6,
-          "description": "Maximum evolutionary search iterations per optimize/refine run. Defaults to the paper's own tuned optimum."
+          "description": "Maximum evolutionary search iterations per optimize/refine run (the paper's tuned optimum is 4)."
         },
         "sbllmOptimizer.generationNumber": {
           "type": "number",
           "default": 4,
           "minimum": 1,
           "maximum": 8,
-          "description": "Candidates sampled per iteration (the paper's generation_number). The paper uses 4; lowering to 1 is ~4x faster but weakens the search, since the candidate pool never grows enough for representative selection to choose between distinct methods."
+          "description": "Candidates sampled per generation, and the size of the initial population (the paper's generation_number = 4). Lower is faster but weakens the search."
         },
         "sbllmOptimizer.representativeSamples": {
           "type": "number",
           "default": 3,
           "minimum": 1,
           "maximum": 5,
-          "description": "Number of representative candidates (Ns) shown to the model each iteration. Defaults to the paper's own tuned optimum."
+          "description": "Representative samples (Ns) shown to the model each iteration (the paper's tuned optimum is 3)."
+        },
+        "sbllmOptimizer.openaiModel": {
+          "type": "string",
+          "default": "gpt-5-mini",
+          "description": "Model name for the OpenAI-compatible provider.",
+          "order": 4
+        },
+        "sbllmOptimizer.openaiBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of an OpenAI-compatible Chat Completions API (e.g. http://localhost:1234/v1 for LM Studio). Empty = the OpenAI API.",
+          "order": 5
+        },
+        "sbllmOptimizer.minSpeedup": {
+          "type": "number",
+          "default": 1.1,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Minimum speedup, verified on held-out tests, for a result to be offered as an optimization. 1.1 matches the paper's OPT metric (at least 10% faster) and keeps measurement noise from being reported as an improvement."
+        },
+        "sbllmOptimizer.pythonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Python interpreter used to run and analyze code. Empty = `python` (Windows) or `python3` on PATH. Point it at your project's virtual environment so imports resolve."
+        },
+        "sbllmOptimizer.cppCompiler": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "C++ compiler used for benchmarking (candidates are built with -std=c++17 -O3). Empty = `g++` on PATH."
+        },
+        "sbllmOptimizer.patternFile": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "description": "Optional JSON/JSONL file of optimization pairs to add to the built-in pattern base — e.g. mined from the PIE training split with scripts/mine_patterns.py (the paper's own source of patterns)."
+        },
+        "sbllmOptimizer.analysis.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Statically analyze open Python/C++ files and flag inefficient code (nested loops, linear lookups in loops, redundant recomputation, exponential recursion, ...)."
+        },
+        "sbllmOptimizer.analysis.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show an \"⚡ Optimize\" CodeLens above functions with detected performance issues."
+        },
+        "sbllmOptimizer.analysis.codeLensForAllFunctions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the Optimize CodeLens above every top-level function, not just flagged ones."
         }
       }
     }
@@ -142,7 +276,10 @@
     "vscode:prepublish": "npm run compile",
     "package:vsix": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce package --no-dependencies",
     "publish:marketplace": "npm run compile && node -r ./scripts/node18-polyfill.cjs ./node_modules/@vscode/vsce/vsce publish --no-dependencies",
-    "publish:openvsx": "npm run compile && ovsx publish --no-dependencies"
+    "publish:openvsx": "npm run compile && ovsx publish --no-dependencies",
+    "analyze": "tsx src/cli/analyze.ts",
+    "test": "node scripts/run-tests.mjs",
+    "test:vscode": "npm run compile && node test-vscode/runTest.mjs"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -151,6 +288,7 @@
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^2.32.0",
     "esbuild": "^0.24.0",
     "ovsx": "^1.1.1",

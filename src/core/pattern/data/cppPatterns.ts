@@ -9,7 +9,7 @@ import type { Pattern } from '../patternBase.js';
  * As with Python, every slow/fast pair is a complete, self-contained function with no undefined
  * names, so a model copying from one cannot paste a dangling identifier into its answer.
  */
-export const cppPatterns: Pattern[] = [
+export const cppPatterns: Omit<Pattern, 'source'>[] = [
   {
     id: 'cpp-set-membership',
     tags: ['membership', 'find', 'vector', 'set', 'lookup', 'contains', 'linear'],

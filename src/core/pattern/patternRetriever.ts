@@ -1,103 +1,152 @@
 import { loadPatternBase, type Pattern } from './patternBase.js';
-import type { LanguageId } from '../lang/languageAdapter.js';
+import { BM25, codeTokens, median, minMax } from './bm25.js';
+import { diffLines } from './textDiff.js';
+import type { LanguageAdapter } from '../lang/languageAdapter.js';
+
+export interface RetrievedPattern {
+  pattern: Pattern;
+  /** The pattern's own slow→fast edit, difflib-style ("- " removed, "+ " added lines) — this is
+   *  what the reference implementation shows the model. */
+  diff: string;
+  score: number;
+}
 
 export interface RetrievedPatterns {
-  similar: Pattern | null;
-  different: Pattern | null;
+  /** Similar to what the representative samples already do — helps rectify their errors. */
+  similar: RetrievedPattern | null;
+  /** Different from what they do — an unexploited optimization method (mutation material). */
+  different: RetrievedPattern | null;
 }
 
-// Unweighted Jaccard similarity treats every token equally, so without filtering, generic Python
-// keywords (for/in/if/def/print) and complexity-notation fragments (the "n"/"o" in "O(n)") swamp
-// the genuinely distinctive words — nearly every pattern's example contains "for"/"in"/"if", so
-// they contribute intersection count without contributing any actual signal.
-const STOPWORDS = new Set([
-  'def', 'for', 'in', 'if', 'and', 'or', 'not', 'return', 'while', 'else', 'elif', 'import', 'from',
-  'as', 'class', 'try', 'except', 'finally', 'with', 'lambda', 'pass', 'break', 'continue', 'is',
-  'none', 'true', 'false', 'print', 'the', 'a', 'an', 'that', 'this', 'to', 'of', 'than', 'are',
-  'be', 'it', 'its', 'when', 'only', 'due', 'by', 'up', 'each', 'other', 'same', 'one', 'into',
-  // C++ keywords and ubiquitous std names — same reasoning as the Python entries above: they
-  // appear in nearly every snippet, so they add intersection without adding signal.
-  'int', 'long', 'short', 'char', 'bool', 'float', 'double', 'void', 'unsigned', 'signed',
-  'const', 'static', 'auto', 'struct', 'std', 'size_t', 'nullptr', 'using', 'namespace',
-  'include', 'template', 'typename', 'switch', 'case', 'new', 'delete', 'sizeof', 'begin', 'end',
-]);
-
-function tokenize(text: string): Set<string> {
-  const tokens = text.toLowerCase().match(/[a-z_][a-z0-9_]*/g) ?? [];
-  return new Set(tokens.filter((t) => t.length > 2 && !STOPWORDS.has(t)));
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let intersection = 0;
-  for (const t of a) if (b.has(t)) intersection++;
-  const union = a.size + b.size - intersection;
-  return union === 0 ? 0 : intersection / union;
-}
-
-// Plain Jaccard over "tags + description + slow" let a coincidental one-word overlap in a SHORT
-// pattern outscore a genuinely relevant TAG match in a longer one, purely because the shorter
-// pattern's smaller union size inflates its ratio. Tags are hand-curated specifically to be the
-// searchable keywords for a pattern, so a query token matching a tag is real signal and should
-// dominate; a match only in prose (description/slow) is much weaker, incidental signal.
-function weightedScore(queryTokens: Set<string>, tagTokens: Set<string>, bodyTokens: Set<string>): number {
-  let score = 0;
-  for (const t of queryTokens) {
-    if (tagTokens.has(t)) score += 3;
-    else if (bodyTokens.has(t)) score += 1;
-  }
-  return score;
+interface IndexedPattern {
+  pattern: Pattern;
+  diff: string;
 }
 
 /**
- * Ports Algorithm 1's "Adaptive Optimization Pattern Retrieval" (paper §II-C): retrieves one
- * pattern semantically similar to the current attempts (to fix errors) and one different from
- * them (to surface an unexploited technique). The paper does this with BM25 over PIE-mined
- * ds/df diffs at corpus scale; against our ~12-entry curated base (ARCHITECTURE.md §4), plain
- * token-Jaccard similarity is equivalent in practice and far simpler — BM25 only starts to matter
- * once Phase 3 swaps in the PIE-scale corpus, at which point this class's *interface* stays the
- * same and only its internals need to change.
+ * Ports Algorithm 1's "Adaptive Optimization Pattern Retrieval" (paper §II-C).
+ *
+ * Fine-grained pattern parsing: every optimization pair (s, f) in the pattern base is abstracted
+ * (s_a, f_a) and diffed into its deleted statements d_s and added statements d_f. Three BM25
+ * indices are built: over s_a, over d_s and over d_f.
+ *
+ * Representative-sample-based retrieval, with the scoring of the authors' released code (merge.py),
+ * which refines the pseudocode's raw sums with normalization:
+ *   input_score = minmax(BM25(Abstract(s_t), T.s_a))
+ *   for each representative e: (ds, df) = GetDiff(Abstract(s_t), Abstract(e.code))
+ *       edit = minmax(BM25(ds, T.d_s) + BM25(df, T.d_f))
+ *       sim += (edit < median ? 0 : edit) / Ns              — patterns that edit like e does
+ *       dif += (edit > median ? 0 : max(edit) - edit) / Ns  — patterns that edit unlike e
+ *   similar   = argmax(input_score + sim)
+ *   different = argmax(input_score + dif)
+ * Both terms keep the input similarity, so the "different" pattern still fits the problem.
  */
 export class PatternRetriever {
   private readonly patterns: Pattern[];
+  private index: {
+    items: IndexedPattern[];
+    code: BM25;
+    deleted: BM25;
+    added: BM25;
+  } | null = null;
+  private building: Promise<void> | null = null;
 
-  constructor(lang: LanguageId) {
-    this.patterns = loadPatternBase(lang);
+  constructor(
+    private readonly adapter: LanguageAdapter,
+    opts: { patterns?: Pattern[]; externalFile?: string } = {},
+  ) {
+    this.patterns = opts.patterns ?? loadPatternBase(adapter.id, opts.externalFile);
   }
 
-  retrieve(slowCode: string, representativeCode: string[]): RetrievedPatterns {
-    if (this.patterns.length === 0) {
-      return { similar: null, different: null };
+  get size(): number {
+    return this.patterns.length;
+  }
+
+  private async ensureIndex(): Promise<void> {
+    if (this.index) return;
+    this.building ??= this.buildIndex();
+    await this.building;
+  }
+
+  private async buildIndex(): Promise<void> {
+    // Abstract whatever the pattern file didn't precompute, in one batched call.
+    const need: string[] = [];
+    for (const p of this.patterns) {
+      if (p.slowAbs === undefined) need.push(p.slow);
+      if (p.fastAbs === undefined) need.push(p.fast);
+    }
+    const abstracted = need.length > 0 ? await this.adapter.abstractMany(need).catch(() => need.map(() => null)) : [];
+    const absOf = new Map<string, string | null>();
+    need.forEach((c, i) => absOf.set(c, abstracted[i] ?? null));
+
+    const items: IndexedPattern[] = [];
+    const codeCorpus: string[][] = [];
+    const delCorpus: string[][] = [];
+    const addCorpus: string[][] = [];
+    for (const p of this.patterns) {
+      const sa = p.slowAbs ?? absOf.get(p.slow) ?? null;
+      const fa = p.fastAbs ?? absOf.get(p.fast) ?? null;
+      if (!sa || !fa) continue;
+      const d = diffLines(sa.split('\n'), fa.split('\n'));
+      if (d.deleted.length === 0 && d.added.length === 0) continue;
+      const rawDiff = diffLines(p.slow.split('\n'), p.fast.split('\n'));
+      items.push({ pattern: p, diff: rawDiff.ops.filter((l) => !l.startsWith('  ')).join('\n') });
+      codeCorpus.push(codeTokens(sa));
+      delCorpus.push(codeTokens(d.deleted.join('\n')));
+      addCorpus.push(codeTokens(d.added.join('\n')));
+    }
+    this.index = {
+      items,
+      code: new BM25(codeCorpus),
+      deleted: new BM25(delCorpus),
+      added: new BM25(addCorpus),
+    };
+  }
+
+  /**
+   * @param slowCode the input slow code s_t
+   * @param representativeCodes code of the selected representative samples RS (best first)
+   */
+  async retrieve(slowCode: string, representativeCodes: string[]): Promise<RetrievedPatterns> {
+    await this.ensureIndex();
+    const idx = this.index!;
+    if (idx.items.length === 0) return { similar: null, different: null };
+
+    const slowAbs = await this.adapter.abstract(slowCode).catch(() => null);
+    const queryAbs = slowAbs ?? slowCode;
+    const inputScore = minMax(idx.code.scores(codeTokens(queryAbs)));
+    const sim = [...inputScore];
+    const dif = [...inputScore];
+
+    const ns = Math.max(1, representativeCodes.length);
+    const repAbs = await this.adapter.abstractMany(representativeCodes).catch(() => representativeCodes.map(() => null));
+    for (const candAbs of repAbs) {
+      if (!candAbs) continue; // unparsable candidate — the reference skips these too
+      const d = diffLines(queryAbs.split('\n'), candAbs.split('\n'));
+      const del = idx.deleted.scores(codeTokens(d.deleted.join('\n')));
+      const add = idx.added.scores(codeTokens(d.added.join('\n')));
+      const raw = del.map((v, i) => v + add[i]);
+      const hi = Math.max(...raw);
+      const lo = Math.min(...raw);
+      if (!(hi - lo > 0)) continue;
+      const edit = minMax(raw);
+      const med = median(edit);
+      const top = Math.max(...edit);
+      for (let i = 0; i < edit.length; i++) {
+        sim[i] += (edit[i] < med ? 0 : edit[i]) / ns;
+        dif[i] += (edit[i] > med ? 0 : top - edit[i]) / ns;
+      }
     }
 
-    // "Similar" is scored against the PROBLEM alone (slowCode) — mixing in representativeCode
-    // here let a buggy attempt's incidental vocabulary (e.g. an attempt that used "set" wrong)
-    // outrank a pattern that actually matches the problem's shape but not that vocabulary.
-    const problemTokens = tokenize(slowCode);
-    // "Different" should surface a technique NOT already reflected in what's been tried — scored
-    // against how much each pattern's fix overlaps with the attempts' code, then inverted.
-    const attemptTokens = tokenize(representativeCode.join(' '));
-
-    const scored = this.patterns.map((pattern) => {
-      const tagTokens = tokenize(pattern.tags.join(' '));
-      const bodyTokens = tokenize(`${pattern.description} ${pattern.slow}`);
-      // Normalized to 0..1 (max weight per token is 3) so it's comparable to alreadyTriedScore below.
-      const inputScore =
-        problemTokens.size > 0 ? weightedScore(problemTokens, tagTokens, bodyTokens) / (3 * problemTokens.size) : 0;
-      const alreadyTriedScore = jaccard(attemptTokens, tokenize(pattern.fast));
-      return { pattern, inputScore, alreadyTriedScore };
-    });
-
-    const bySimilar = [...scored].sort((a, b) => b.inputScore - a.inputScore);
-    const similar = bySimilar[0]?.pattern ?? null;
-
-    // Must still be plausibly relevant to the problem (inputScore) — otherwise "different" would
-    // just surface a random unrelated pattern, which isn't useful mutation material either.
-    const byDifferent = scored
-      .filter((s) => s.pattern.id !== similar?.id)
-      .sort((a, b) => b.inputScore - b.alreadyTriedScore - (a.inputScore - a.alreadyTriedScore));
-    const different = byDifferent[0]?.pattern ?? null;
-
-    return { similar, different };
+    const argmax = (xs: number[], exclude = -1) => {
+      let best = -1;
+      for (let i = 0; i < xs.length; i++) if (i !== exclude && (best === -1 || xs[i] > xs[best])) best = i;
+      return best;
+    };
+    const s = argmax(sim);
+    const d = argmax(dif, s);
+    const wrap = (i: number, scores: number[]): RetrievedPattern | null =>
+      i >= 0 ? { pattern: idx.items[i].pattern, diff: idx.items[i].diff, score: scores[i] } : null;
+    return { similar: wrap(s, sim), different: wrap(d, dif) };
   }
 }

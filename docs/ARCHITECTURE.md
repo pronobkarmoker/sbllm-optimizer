@@ -181,8 +181,9 @@ interface LLMProvider {
 Algorithm 2 ported almost directly, with defaults chosen for *interactive* latency instead of an offline batch
 job with a research budget:
 
-- `Ns = 2` (not 3), `maxIterations = 3` (not 4) by default — each iteration is an LLM round trip plus one or
-  more sandboxed executions; both settings are user-configurable for anyone who wants paper-parity.
+- ~~`Ns = 2` (not 3), `maxIterations = 3` (not 4) by default~~ — superseded (v0.2.0): the paper's own tuned
+  values (`Ns = 3`, 4 iterations, 4 candidates per generation) are the defaults, since the retuned values were
+  not grounded in anything and measurably weakened the search. All are user-configurable.
 - VS Code `Progress` notification showing iteration number + current best speedup, backed by a real
   `CancellationToken` — the loop must check it between steps, not just at the top.
 - Same convergence check as the paper (representative samples unchanged AND correct → stop), plus a wall-clock/
@@ -289,3 +290,39 @@ is built, so a bad answer there doesn't waste UI work.
   strong midterm-presentation artifact, independent of the extension shipping.
 - **License/attribution**: the pattern base is derived from PIE/CodeNet — worth confirming what the dataset
   license permits for redistribution inside a VSIX before Phase 3.
+
+---
+
+## 12. As built (v0.4.0)
+
+The sections above are the original design. This is how it was actually realized, and where it deliberately
+diverged.
+
+**Pipeline.** `analyze → seed population → iterate (Algorithm 2) → verify top-k → apply`.
+
+| Concern | Module | Notes |
+|---|---|---|
+| Static inefficiency analysis (proposal: "Intelligent Code Analysis") | `core/analysis/*`, `lang/python/analyze.py` | Python via `ast` (parse only, safe in untrusted workspaces); C++ via a statement-level walk of the masked source. Surfaced as diagnostics, CodeLens and quick fixes (`vscode/analysisController.ts`). |
+| Test oracle (§2.1, tier 2) | `fitness/testOracle/differential.ts` | LLM-synthesized inputs + two generated stress inputs (one public, one private) so timing reflects asymptotics. Compares return value, stdout and post-call argument state. |
+| Algorithm 1, selection | `fitness/fitnessEvaluator.ts` | `acc == 1` (paper) for the correct group; AST-abstraction dedup; incorrect ones by ascending summed edit distance. Abstractions cached. |
+| Algorithm 1, retrieval | `pattern/patternRetriever.ts`, `bm25.ts`, `textDiff.ts` | Three BM25 indices (s_a, d_s, d_f; `b = 0.4`) with the released code's min-max + median scoring. Curated base built in; PIE-mined base via `scripts/mine_patterns.py` + `patternFile`. |
+| GO-COT (Fig. 3) | `prompt/goCotPromptBuilder.ts` | Crossover / mutation / generation instructions; reasoning specification as JSON keys (§6). |
+| Algorithm 2 | `optimizer/evolutionaryOptimizer.ts` | CoT seed population of `generationNumber`; `Sol ← RS ∪ NC`; convergence check; final re-rank; top-3 verified on private tests; ≥ 1.1x (the OPT threshold) required to offer Apply. |
+| Execution | `lang/pythonAdapter.ts`, `lang/cppAdapter.ts`, `util/process.ts` | Subprocess per batch with a hard timeout; a crashing/hanging/`sys.exit()`-ing candidate is scored `acc = 0`, never aborts the run. `PYTHONHASHSEED=0`. C++: one binary with candidate and original in separate namespaces, exception-safe stdout capture. |
+| File context | `PythonAdapter.prepareContext`, `CppAdapter.prepareContext` | Code above the function is kept only where side-effect free (imports, defs, constant assignments); `main()` stripped for C++. |
+| UI | `vscode/insightsPanel.ts`, `vscode/extension.ts` | Live candidates, execution comparison, finalists, search trace; Apply locates the function by its current text (never a stale range); Cancel keeps results. |
+| Storage | `vscode/historyStore.ts` | Run history as JSON in global storage (proposal: "JSON / SQLite"). |
+| LLMs | `llm/*` | Ollama (streaming), Gemini, OpenAI-compatible (proposal: "OpenAI / Gemini / Ollama"). |
+
+**Divergences from the design above.**
+- §4: web-tree-sitter was not adopted. Python uses `ast`; C++ uses a regex/scanner abstraction. For dedup, edit
+  distance and BM25 the normalized token stream is equivalent, and there is no WASM grammar to ship.
+- §2.2: instead of bundling a pre-mined subset of PIE (licensing question in §11 unresolved), the extension
+  bundles only curated patterns and *loads* a user-mined PIE base from disk.
+- §5: no memory limit / sandbox yet — execution is gated on workspace trust instead.
+- §6: no response cache; `Refine Further` reuses the oracle and population, which removes the main repeat cost.
+- JavaScript and shell adapters (§3) are not implemented; the paper evaluates Python and C++ only.
+
+**Tests.** `npm test` runs unit tests for parsing, retrieval, selection and analysis, integration tests against
+real Python and g++, and an end-to-end optimizer run against a scripted LLM (including cancellation and
+"no correct candidate" paths).

@@ -1,7 +1,10 @@
 import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
-import type { GenerateOptions, LLMProvider, LLMResponse, Prompt } from './llmProvider.js';
+import { DegenerateOutputError, isDegenerateRepetition, type GenerateOptions, type LLMProvider, type LLMResponse, type Prompt } from './llmProvider.js';
+
+/** Enough for a full GO-COT answer (reasoning + a complete function); stops runaway generations. */
+const DEFAULT_MAX_TOKENS = 4096;
 
 export interface OllamaProviderOptions {
   model: string;
@@ -47,7 +50,14 @@ export class OllamaProvider implements LLMProvider {
         { role: 'user', content: prompt.user },
       ],
       stream: true,
-      options: { temperature: opts.temperature ?? 0.7 },
+      options: {
+        temperature: opts.temperature ?? 0.7,
+        num_predict: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+        // Discourages the repetition loops small models fall into; mild enough not to hurt code,
+        // which legitimately repeats tokens.
+        repeat_penalty: 1.1,
+        repeat_last_n: 256,
+      },
     });
 
     const failures: string[] = [];
@@ -61,7 +71,7 @@ export class OllamaProvider implements LLMProvider {
         if (text.trim() !== '') return { text };
         failures.push(`${transport}: connected but returned no content`);
       } catch (err) {
-        if ((err as Error).name === 'AbortError') throw err;
+        if ((err as Error).name === 'AbortError' || err instanceof DegenerateOutputError) throw err;
         failures.push(`${transport}: ${(err as Error).message}`);
       }
     }
@@ -73,7 +83,7 @@ export class OllamaProvider implements LLMProvider {
   }
 
   /** Consumes one NDJSON line, returning any content it carries. Ollama reports errors in-band. */
-  private consumeLine(line: string, out: { text: string }): void {
+  private consumeLine(line: string, out: { text: string; checkedAt?: number }): void {
     const trimmed = line.trim();
     if (trimmed === '') return;
     let obj: { message?: { content?: string }; error?: string };
@@ -84,6 +94,12 @@ export class OllamaProvider implements LLMProvider {
     }
     if (obj.error) throw new Error(`Ollama error: ${obj.error}`);
     if (obj.message?.content) out.text += obj.message.content;
+    // Checked every ~400 new characters while streaming, so a looping reply is cut off within
+    // seconds instead of running to the token cap (minutes, on a CPU-only local model).
+    if (out.text.length - (out.checkedAt ?? 0) >= 400) {
+      out.checkedAt = out.text.length;
+      if (isDegenerateRepetition(out.text)) throw new DegenerateOutputError();
+    }
   }
 
   private async viaFetch(body: string, opts: GenerateOptions): Promise<string> {
@@ -100,15 +116,21 @@ export class OllamaProvider implements LLMProvider {
     const decoder = new TextDecoder();
     const out = { text: '' };
     let buffer = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) this.consumeLine(line, out);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) this.consumeLine(line, out);
+      }
+      this.consumeLine(buffer, out);
+    } catch (err) {
+      // Stop the server-side generation too, not just our reading of it.
+      await reader.cancel().catch(() => {});
+      throw err;
     }
-    this.consumeLine(buffer, out);
     return out.text;
   }
 

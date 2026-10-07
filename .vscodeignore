@@ -15,3 +15,9 @@ tsconfig.json
 
 node_modules/**
 *.vsix
+
+test/**
+.github/**
+examples/**
+test-vscode/**
+.vscode-test/**

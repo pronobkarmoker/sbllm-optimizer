@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.0
+
+Completes the project proposal's feature list and closes the remaining gaps to the paper's method.
+
+**New**
+
+- **Intelligent code analysis.** Python and C++ files are statically analyzed for inefficient code — nested loops (with an `O(n^k)` estimate), linear lookups/STL scans inside loops, loop-invariant recomputation, quadratic string/list building, `pop(0)` / front erases, sorting in loops, `std::endl` in loops, containers passed by value, exponential recursion without memoization, sorting to take a min/max. Shown as diagnostics with suggestions, an **⚡ Optimize** CodeLens on flagged functions, and a quick fix. New command **SBLLM: Analyze File for Performance Issues** and `npm run analyze`.
+- **Pattern retrieval now follows Algorithm 1.** BM25 over the abstracted slow code and over the abstracted deleted/added statements (`d_s`/`d_f`) of each optimization pair, with the released code's scoring, retrieving one similar and one different pattern. Patterns are shown to the model as diffs, as in the reference implementation. Previously this was token-Jaccard over hand-written tags.
+- **PIE-mined pattern bases.** `scripts/mine_patterns.py` builds a pattern file from a PIE training split; load it with `sbllmOptimizer.patternFile`.
+- **Algorithm 2 population update.** `Sol ← RS ∪ NC` each iteration (the population used to grow without bound), seeded with a chain-of-thought initial population of `generationNumber` candidates instead of a single seed.
+- **GO-COT prompt restructured to the paper's Fig. 3** — crossover / mutation / generation instructions, reasoning specification, input placeholder with measured times.
+- **Verified results only.** The top 3 publicly-correct candidates are re-measured on the private tests; a result is offered for Apply only if it is correct there and at least `sbllmOptimizer.minSpeedup` (default 1.1x, the paper's OPT threshold) faster.
+- **Insights panel:** live candidate list, original-vs-optimized time comparison, verified finalists (each appliable), the per-iteration search trace, and a Cancel button.
+- **OpenAI / OpenAI-compatible provider** (OpenAI, LM Studio, vLLM, ...) — **SBLLM: Set OpenAI API Key**.
+- **Optimization history** saved as JSON — **SBLLM: Show Optimization History**.
+- New settings: `pythonPath`, `cppCompiler`, `patternFile`, `minSpeedup`, `openaiModel`, `openaiBaseUrl`, `analysis.*`. Interpreter/compiler/endpoint settings are ignored in untrusted workspaces.
+- Test suite (`npm test`), including an end-to-end optimizer run against a scripted LLM.
+
+**Fixes**
+
+- A single candidate that called `sys.exit()`, crashed the interpreter or hung **aborted the whole optimization run**. It is now scored as incorrect and the search continues.
+- A C++ candidate that threw an exception left `std::cout` pointing at a destroyed buffer, **losing every result in the batch**.
+- C++ candidates (or file context) with a helper function above the target **failed to compile** — the harness picked the first function in the file instead of the target by name. Python had the same bug in its signature check.
+- Python signatures with generic type hints (`dict[str, int]`) or defaults containing parentheses were mis-parsed, so a candidate that kept a type hint was rejected as a signature change.
+- C++ `char` parameters were always read as `'\n'`; non-ASCII strings desynchronized the C++ input protocol (lengths are now UTF-8 bytes).
+- Functions returning a set of strings failed against their own ground truth (per-process hash randomization); sets and non-string-keyed dicts are now serialized canonically and `PYTHONHASHSEED` is fixed.
+- In-place mutation is now part of a function's observable behaviour (Python and C++), and the C++ timing loop gives every call a fresh copy of non-const reference arguments instead of re-running on already-mutated data.
+- The stress input (the one large enough to show asymptotic speedups) always landed in the private split, so the search only ever timed tiny inputs. One stress input now goes to each split, and they run in their own batch so a very slow original can't take the regular cases down.
+- The "best" result could be a candidate that **failed the public tests** (if it happened to pass the small private set), or one **slower than the original** — and Apply was enabled for it.
+- **Apply could corrupt the file**: it reused the range captured when the run started, so applying twice (or after editing) replaced the wrong text. Apply now locates the function by its current text.
+- **Cancel discarded everything**; it now verifies and reports the best candidate found so far.
+- All top-level code above the function (e.g. `n = input()`, file writes, prints) ran on every evaluation. Only side-effect-free statements are kept as context now; C++ `main()` is stripped.
+- A model reply with no usable code in the *seed* step aborted the run.
+- Representative selection allocated a full edit-distance matrix per pair on the extension host thread; now O(min(n, m)) memory with cached abstractions.
+- Test-input generation now honours cancellation and retries once on malformed JSON.
+
+**Found by running against a real local model (qwen2.5-coder:1.5b via Ollama)**
+
+- A small model can fall into a repetition loop and stream forever (observed: 9,000+ tokens for a ~300-token reply), hanging the run. Ollama output is now capped (`num_predict`), and a test-input reply cut off by the cap keeps its complete entries.
+- Generated test inputs whose shape contradicts the others (one list of lists, or a mixed-type list, among flat lists of numbers) are dropped: a single such input made every correct set- or sort-based rewrite fail verification.
+- C++ crashes are reported as e.g. "segmentation fault" instead of a raw Windows exit code.
+- Replies stuck in a repetition loop (the same sentence ~100 times, never reaching the code) are now detected while streaming and stopped within a few hundred tokens instead of running to the cap — minutes saved per occurrence on a CPU-only model. Ollama requests also use a mild repeat penalty. Such a reply counts as an unusable sample, not as a model/connection failure.
+- **Candidate repair.** A candidate that defines the right function under a different name (often copied from an incorrect version in the prompt) is renamed back, and Python candidates that use well-known standard-library names (`lru_cache`, `Counter`, `deque`, `bisect_left`, `heappush`, ...) without importing them get the import added. Both used to throw away otherwise-correct candidates; the repaired code is still verified by the test oracle like any other.
+- New command **SBLLM: Apply Best Result**, and a VS Code integration test suite (`npm run test:vscode`) that drives the real extension in a separate VS Code instance.
+- The OpenAI default model is now `gpt-5-mini` (GPT-4o has been retired from ChatGPT and announced for API retirement).
+
 ## 0.3.0
 
 **C++ support**, covering the second language the paper evaluates on (994 PIE test samples alongside Python's 986).

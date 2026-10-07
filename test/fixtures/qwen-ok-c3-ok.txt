@@ -1,0 +1,8 @@
+```json
+{
+    "analysis": "The existing version uses a nested loop to compare every pair of numbers, which is O(n^2) time complexity. The optimized version uses a hash set to store the numbers we have seen so far. This reduces the time complexity to O(n) because inserting into a hash set is average O(1) time. The transformation pattern used is to replace the nested loop with a single pass using a hash set.",
+    "opportunities": "The existing version uses a nested loop to compare every pair of numbers, which is O(n^2) time complexity. The optimized version uses a hash set to store the numbers we have seen so far. This reduces the time complexity to O(n) because inserting into a hash set is average O(1) time. The transformation pattern used is to replace the nested loop with a single pass using a hash set.",
+    "explanation": "The existing version uses a nested loop to compare every pair of numbers, which is O(n^2) time complexity. The optimized version uses a hash set to store the numbers we have seen so far. This reduces the time complexity to O(n) because inserting into a hash set is average O(1) time. The transformation pattern used is to replace the nested loop with a single pass using a hash set.",
+    "code": "bool has_duplicate(std::vector<int> numbers) {\n    std::unordered_set<int> seen;\n    for (int n : numbers) {\n        if (!seen.insert(n).second) return true;\n    }\n    return false;\n}"
+}
+```

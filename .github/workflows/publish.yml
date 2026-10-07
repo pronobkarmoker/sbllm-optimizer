@@ -44,6 +44,10 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # ubuntu-latest ships python3 and g++, so the integration and end-to-end tests run too.
+      - name: Test
+        run: npm test
+
       - name: Build and package
         run: npx vsce package --no-dependencies
 
