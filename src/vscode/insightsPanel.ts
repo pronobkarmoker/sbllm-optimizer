@@ -310,7 +310,15 @@ function renderShell(cspSource: string): string {
     } else {
       setStatus('bad', 'No correct candidate');
       $('headline').textContent = 'No correct optimized version found';
-      compare.appendChild(el('div', 'Every candidate failed the tests. Try Refine Further, or a stronger model.'));
+      const passedSearch = r.history.filter((c) => c.acc === 1).length;
+      if (passedSearch > 0) {
+        const reason = r.finalists.length && r.finalists[0].error ? r.finalists[0].error : 'output did not match';
+        compare.appendChild(el('div',
+          passedSearch + ' candidate(s) passed the search tests, but none passed the held-out tests (' + reason +
+          '). Nothing is applied unless it passes both. Try Refine Further.'));
+      } else {
+        compare.appendChild(el('div', 'Every candidate failed the tests. Try Refine Further, or a stronger model.'));
+      }
       compare.style.display = 'block';
     }
     if (r.improved) compare.style.display = '';

@@ -347,15 +347,38 @@ export class EvolutionaryOptimizer {
     if (eligible.length > 0) {
       log(`Verifying the top ${eligible.length} candidate(s) on ${oracle.privateCount} held-out private test case(s)…`);
     }
-    for (const c of eligible) {
-      const priv = await oracle.evaluatePrivate(c.code);
-      finalists.push({ ...c, ...priv, publicAcc: c.acc, publicSpeedup: c.speedup });
+    const verify = async (cands: Candidate[]) => {
+      for (const c of cands) {
+        const priv = await oracle.evaluatePrivate(c.code);
+        finalists.push({ ...c, ...priv, publicAcc: c.acc, publicSpeedup: c.speedup });
+        if (priv.acc !== 1) log(`#${c.id} failed the held-out tests: ${priv.error ?? 'output did not match'}`);
+      }
+    };
+    await verify(eligible);
+
+    // If every top candidate fails the held-out tests, keep going down the list: a candidate ranked
+    // lower on speed may still be correct, and stopping at the top 3 threw it away.
+    if (!finalists.some((f) => f.acc === 1)) {
+      const checked = new Set(finalists.map((f) => f.id));
+      const rest = this.history
+        .filter((c) => c.acc === 1 && !checked.has(c.id))
+        .sort((a, b) => b.speedup - a.speedup)
+        .slice(0, 6);
+      if (rest.length > 0) {
+        log(`None of the top ${eligible.length} passed — also checking ${rest.length} other candidate(s) that passed the search tests…`);
+        await verify(rest);
+      }
     }
     finalists.sort((a, b) => Number(b.acc === 1) - Number(a.acc === 1) || b.speedup - a.speedup);
 
     const best = finalists.find((f) => f.acc === 1) ?? null;
     const improved = best !== null && best.speedup >= minSpeedup;
-    if (!best) {
+    if (!best && finalists.length > 0) {
+      log(
+        `${finalists.length} candidate(s) passed the search tests but failed the held-out tests ` +
+          `(first reason: ${finalists[0].error ?? 'output did not match'}). Try Refine Further.`,
+      );
+    } else if (!best) {
       log('No candidate was correct on both the public and the private tests.');
     } else if (!improved) {
       log(`Best correct candidate is #${best.id} at ${best.speedup.toFixed(2)}x — below the ${minSpeedup}x threshold, so it is not offered as an optimization.`);

@@ -95,3 +95,20 @@ test('cancellation mid-search reports results found so far instead of throwing',
   assert.ok(result.history.length >= 2);
   assert.ok(result.best);
 });
+
+test('if the top candidates fail the held-out tests, lower-ranked correct ones are verified too', { skip: noPy, timeout: 180_000 }, async () => {
+  // Very fast, but wrong for [10, 20, 30, 40] — an input that lands in the PRIVATE split.
+  const TRICKY = `def has_duplicate(numbers):
+    if numbers[:1] == [10]:
+        return True
+    return len(set(numbers)) != len(numbers)`;
+  const llm = new ScriptedLLM(INPUTS, [goCot(TRICKY), goCot(FAST)]);
+  const opt = new EvolutionaryOptimizer(llm, { scriptsDir: SCRIPTS_DIR, language: 'python' });
+  const logs: string[] = [];
+  const result = await opt.optimize(SLOW, { maxIterations: 1, generationNumber: 2, topK: 1, onProgress: (m) => logs.push(m) });
+  const tricky = result.finalists.find((f) => f.code === TRICKY);
+  assert.ok(tricky && tricky.acc < 1, 'the tricky candidate is caught by the held-out tests');
+  assert.ok(logs.some((l) => /failed the held-out tests/.test(l)), 'the failure reason is logged');
+  assert.equal(result.best?.code, FAST, 'the slower but correct candidate is still found');
+  assert.ok(result.improved);
+});

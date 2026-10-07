@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- If every top candidate fails the held-out tests, the remaining candidates that passed the search tests are verified too — a slower but correct one was being thrown away.
+- Why a candidate failed the held-out tests is now shown in the log and the insights panel; the panel no longer says "every candidate failed" when some passed the search tests.
+- Test inputs outside the function's contract are also filtered using execution evidence: if a flat list works on the original, nested/dict/mixed lists for that argument are dropped.
+
 ## 0.4.0
 
 Completes the project proposal's feature list and closes the remaining gaps to the paper's method.
