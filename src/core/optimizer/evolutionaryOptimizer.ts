@@ -250,7 +250,11 @@ export class EvolutionaryOptimizer {
 
     const sliced = await this.adapter.sliceContext(prepared.code, slowCode).catch(() => ({ code: prepared.code, kept: 0, total: 0 }));
     if (sliced.total > 0 && sliced.kept < sliced.total) {
-      log(`Prompt context: the function uses ${sliced.kept} of the ${sliced.total} definitions above it; only those are sent to the model.`);
+      log(
+        sliced.kept === 0
+          ? `Prompt context: the function uses none of the ${sliced.total} definitions above it, so no file context is sent to the model.`
+          : `Prompt context: the function uses ${sliced.kept} of the ${sliced.total} definitions above it; only those are sent to the model.`,
+      );
     }
     const budget = this.promptBudget;
     if (budget) log(`Context budget: ~${budget.toLocaleString()} prompt tokens (window ${this.llm.contextWindow!.toLocaleString()}, reply ${(this.llm.maxOutputTokens ?? 2048).toLocaleString()}).`);
