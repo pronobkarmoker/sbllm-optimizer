@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { LanguageAdapter, PreparedContext, RunBatchResult } from './languageAdapter.js';
+import type { LanguageAdapter, PreparedContext, RunBatchResult, RunOptions } from './languageAdapter.js';
 import { runProcess } from '../util/process.js';
 
 export type { CallResult, RunBatchResult } from './languageAdapter.js';
@@ -62,6 +62,19 @@ export class PythonAdapter implements LanguageAdapter {
     };
   }
 
+  async sliceContext(context: string, target: string): Promise<{ code: string; kept: number; total: number }> {
+    if (!context.trim()) return { code: '', kept: 0, total: 0 };
+    const res = await this.runJsonScript('analyze.py', JSON.stringify({ mode: 'slice', code: context, target }), 15_000);
+    if (!res || res.ok === false || typeof res.code !== 'string') return { code: context, kept: 0, total: 0 };
+    return { code: res.code, kept: res.kept ?? 0, total: res.total ?? 0 };
+  }
+
+  /** Single-mutation variants of `funcName` (analyze.py "mutants" mode) for mutation analysis. */
+  async mutants(code: string, funcName: string, limit: number): Promise<{ description: string; code: string }[]> {
+    const res = await this.runJsonScript('analyze.py', JSON.stringify({ mode: 'mutants', code, funcName, limit }), 15_000);
+    return res && Array.isArray(res.mutants) ? res.mutants : [];
+  }
+
   /** Static analysis (analyze.py "analyze" mode). Parsing only — no user code is executed. */
   async analyze(code: string): Promise<unknown> {
     return this.runJsonScript('analyze.py', JSON.stringify({ mode: 'analyze', code }), 15_000);
@@ -73,11 +86,12 @@ export class PythonAdapter implements LanguageAdapter {
     inputs: unknown[][],
     timeoutMs = 20_000,
     baselineCode?: string,
+    options: RunOptions = {},
   ): Promise<RunBatchResult> {
     const proc = await runProcess(
       this.pythonBin,
       [path.join(this.scriptsDir, 'run_candidate.py')],
-      JSON.stringify({ code, funcName, inputs, baselineCode }),
+      JSON.stringify({ code, funcName, inputs, baselineCode, timing: options.timing !== false }),
       timeoutMs,
       this.env(),
     );

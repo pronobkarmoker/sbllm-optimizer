@@ -3,6 +3,7 @@ import type { Candidate } from '../fitness/types.js';
 import type { RetrievedPattern, RetrievedPatterns } from '../pattern/patternRetriever.js';
 import { extractJson } from '../util/json.js';
 import { LANGUAGE_META, type LanguageId } from '../lang/languageAdapter.js';
+import { estimateTokens, signaturesOnly } from './contextBudget.js';
 
 export interface GoCotResponse {
   analysis: string;
@@ -52,7 +53,27 @@ function contextBlock(lang: LanguageId, contextPrefix?: string): string {
  * optimization techniques"; its strongest baseline, and what this uses, is chain-of-thought
  * prompting: explain how to optimize the program, then produce the optimized code.
  */
-export function buildInitialPrompt(lang: LanguageId, slowCode: string, contextPrefix?: string): Prompt {
+export function buildInitialPrompt(lang: LanguageId, slowCode: string, contextPrefix?: string, maxPromptTokens?: number): Prompt {
+  // Budget: full context → signatures only → no context. The function itself is never cut.
+  const variants: [string | undefined, string | null][] = [
+    [contextPrefix, null],
+    [contextPrefix ? signaturesOnly(lang, contextPrefix) : undefined, 'file context reduced to signatures'],
+    [undefined, 'file context omitted'],
+  ];
+  let prompt = renderInitialPrompt(lang, slowCode, variants[0][0]);
+  const trimmed: string[] = [];
+  for (const [ctx, note] of variants.slice(1)) {
+    if (!maxPromptTokens || estimateTokens(prompt.system! + prompt.user) <= maxPromptTokens || !contextPrefix) break;
+    prompt = renderInitialPrompt(lang, slowCode, ctx);
+    if (note) trimmed.push(note);
+  }
+  if (maxPromptTokens && estimateTokens(prompt.system! + prompt.user) > maxPromptTokens) {
+    trimmed.push('the function alone exceeds the model\'s context window — the prompt will be cut by the model server');
+  }
+  return trimmed.length ? { ...prompt, trimmed } : prompt;
+}
+
+function renderInitialPrompt(lang: LanguageId, slowCode: string, contextPrefix?: string): Prompt {
   const L = LANGUAGE_META[lang].label;
   return {
     system: [
@@ -98,11 +119,18 @@ const MAX_EXAMPLE_LINES = 25;
  * whose technique — not its names — is what to reuse. Long mined patterns (whole programs) keep the
  * compact diff.
  */
-function patternBlock(title: string, purpose: string, p: RetrievedPattern | null, fence: string): string | null {
+function patternBlock(
+  title: string,
+  purpose: string,
+  p: RetrievedPattern | null,
+  fence: string,
+  mode: 'example' | 'diff' | 'desc' = 'example',
+): string | null {
   if (!p) return null;
   const lines = (s: string) => s.trim().split('\n').length;
   const header = [`${title} (${purpose}):`, ...(p.pattern.description ? [`Technique: ${p.pattern.description}`] : [])];
-  if (lines(p.pattern.slow) > MAX_EXAMPLE_LINES || lines(p.pattern.fast) > MAX_EXAMPLE_LINES) {
+  if (mode === 'desc') return p.pattern.description ? header.join('\n') : null;
+  if (mode === 'diff' || lines(p.pattern.slow) > MAX_EXAMPLE_LINES || lines(p.pattern.fast) > MAX_EXAMPLE_LINES) {
     return [...header, 'Edit (lines removed "-" and added "+"; names belong to a different program):', '```diff', p.diff, '```'].join('\n');
   }
   return [
@@ -133,7 +161,45 @@ export function buildIterationPrompt(
   representative: Candidate[],
   patterns: RetrievedPatterns,
   contextPrefix?: string,
+  maxPromptTokens?: number,
 ): Prompt {
+  // Context budget: when the prompt doesn't fit, shrink parts in this order — least valuable first —
+  // until it does. The rules, the output format and the function itself are never cut, and the best
+  // version is always shown in full.
+  type Level = { ctx: 'full' | 'sig' | 'none'; pat: 'example' | 'diff' | 'desc' | 'none'; ver: 'all' | 'errors' | 'best'; note: string | null };
+  const levels: Level[] = [
+    { ctx: 'full', pat: 'example', ver: 'all', note: null },
+    { ctx: 'sig', pat: 'example', ver: 'all', note: 'file context reduced to signatures' },
+    { ctx: 'sig', pat: 'diff', ver: 'all', note: 'patterns shown as diffs' },
+    { ctx: 'sig', pat: 'diff', ver: 'errors', note: 'incorrect versions shown as their error only' },
+    { ctx: 'sig', pat: 'desc', ver: 'errors', note: 'patterns reduced to a description' },
+    { ctx: 'none', pat: 'desc', ver: 'errors', note: 'file context omitted' },
+    { ctx: 'none', pat: 'none', ver: 'best', note: 'only the best version shown; patterns omitted' },
+  ];
+  const trimmed: string[] = [];
+  let prompt = renderIterationPrompt(lang, slowCode, representative, patterns, contextPrefix, levels[0]);
+  for (const level of levels.slice(1)) {
+    if (!maxPromptTokens || estimateTokens(prompt.system! + prompt.user) <= maxPromptTokens) break;
+    prompt = renderIterationPrompt(lang, slowCode, representative, patterns, contextPrefix, level);
+    if (level.note) trimmed.push(level.note);
+  }
+  if (maxPromptTokens && estimateTokens(prompt.system! + prompt.user) > maxPromptTokens) {
+    trimmed.push('still over budget — the prompt may be cut by the model server');
+  }
+  return trimmed.length ? { ...prompt, trimmed } : prompt;
+}
+
+function renderIterationPrompt(
+  lang: LanguageId,
+  slowCode: string,
+  representativeAll: Candidate[],
+  patterns: RetrievedPatterns,
+  contextPrefixFull: string | undefined,
+  level: { ctx: 'full' | 'sig' | 'none'; pat: 'example' | 'diff' | 'desc' | 'none'; ver: 'all' | 'errors' | 'best' },
+): Prompt {
+  const contextPrefix =
+    !contextPrefixFull || level.ctx === 'none' ? undefined : level.ctx === 'sig' ? signaturesOnly(lang, contextPrefixFull) : contextPrefixFull;
+  const representative = level.ver === 'best' ? representativeAll.slice(0, 1) : representativeAll;
   const L = LANGUAGE_META[lang].label;
   const fence = LANGUAGE_META[lang].fence;
 
@@ -163,9 +229,7 @@ export function buildIterationPrompt(
     .map((c, i) =>
       [
         `[Version ${i + 1}] ${describeAttempt(c)}:`,
-        '```' + fence,
-        c.code.trim(),
-        '```',
+        ...(level.ver !== 'all' && c.acc !== 1 ? ['(code omitted to fit the context window)'] : ['```' + fence, c.code.trim(), '```']),
         `Accuracy: ${c.acc.toFixed(2)}` +
           (c.acc === 1 && c.avgTimeMs !== null && c.baselineTimeMs !== null
             ? `  Time: ${formatMs(c.avgTimeMs)} vs original ${formatMs(c.baselineTimeMs)}`
@@ -175,10 +239,10 @@ export function buildIterationPrompt(
     )
     .join('\n\n');
 
-  const patternText = [
-    patternBlock('Pattern 1 — similar', 'may help rectify errors in the existing versions', patterns.similar, fence),
-    patternBlock('Pattern 2 — different', 'an optimization method not yet exploited', patterns.different, fence),
-  ]
+  const patternText = (level.pat === 'none' ? [] : [
+    patternBlock('Pattern 1 — similar', 'may help rectify errors in the existing versions', patterns.similar, fence, level.pat),
+    patternBlock('Pattern 2 — different', 'an optimization method not yet exploited', patterns.different, fence, level.pat),
+  ])
     .filter(Boolean)
     .join('\n\n');
 

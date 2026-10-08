@@ -4,7 +4,10 @@ import { URL } from 'node:url';
 import { DegenerateOutputError, isDegenerateRepetition, type GenerateOptions, type LLMProvider, type LLMResponse, type Prompt } from './llmProvider.js';
 
 /** Enough for a full GO-COT answer (reasoning + a complete function); stops runaway generations. */
-const DEFAULT_MAX_TOKENS = 4096;
+const DEFAULT_MAX_TOKENS = 2048;
+/** Ollama's own default window is small (and it silently cuts longer prompts to fit). 8192 fits a
+ *  1.5B model in ~1.3 GB; 32k ran out of memory on an 8 GB laptop. */
+const DEFAULT_CONTEXT_WINDOW = 8192;
 
 export interface OllamaProviderOptions {
   model: string;
@@ -12,6 +15,8 @@ export interface OllamaProviderOptions {
   /** Idle timeout between streamed chunks — not a cap on total generation time. Streaming makes a
    *  long generation look like steady activity rather than one long silence. */
   idleTimeoutMs?: number;
+  /** Context window (num_ctx) requested from Ollama for every call. */
+  contextWindow?: number;
 }
 
 /**
@@ -32,6 +37,8 @@ export interface OllamaProviderOptions {
  */
 export class OllamaProvider implements LLMProvider {
   readonly id = 'ollama';
+  readonly contextWindow: number;
+  readonly maxOutputTokens = DEFAULT_MAX_TOKENS;
   private readonly host: string;
   private readonly model: string;
   private readonly idleTimeoutMs: number;
@@ -40,6 +47,7 @@ export class OllamaProvider implements LLMProvider {
     this.host = opts.host ?? 'http://127.0.0.1:11434';
     this.model = opts.model;
     this.idleTimeoutMs = opts.idleTimeoutMs ?? 120_000;
+    this.contextWindow = opts.contextWindow && opts.contextWindow >= 2048 ? opts.contextWindow : DEFAULT_CONTEXT_WINDOW;
   }
 
   async generate(prompt: Prompt, opts: GenerateOptions = {}): Promise<LLMResponse> {
@@ -53,6 +61,8 @@ export class OllamaProvider implements LLMProvider {
       options: {
         temperature: opts.temperature ?? 0.7,
         num_predict: opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+        // Always explicit: a constant value also keeps Ollama from reloading the model between calls.
+        num_ctx: this.contextWindow,
         // Discourages the repetition loops small models fall into; mild enough not to hurt code,
         // which legitimately repeats tokens.
         repeat_penalty: 1.1,

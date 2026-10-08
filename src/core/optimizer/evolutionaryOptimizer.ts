@@ -2,7 +2,7 @@ import type { LLMProvider } from '../llm/llmProvider.js';
 import { PythonAdapter } from '../lang/pythonAdapter.js';
 import { CppAdapter } from '../lang/cppAdapter.js';
 import type { LanguageAdapter, LanguageId } from '../lang/languageAdapter.js';
-import { DifferentialTestOracle } from '../fitness/testOracle/differential.js';
+import { DifferentialTestOracle, type TestStrength } from '../fitness/testOracle/differential.js';
 import { FitnessEvaluator } from '../fitness/fitnessEvaluator.js';
 import { PatternRetriever, type RetrievedPatterns } from '../pattern/patternRetriever.js';
 import { buildInitialPrompt, buildIterationPrompt, parseGoCotResponse } from '../prompt/goCotPromptBuilder.js';
@@ -33,6 +33,12 @@ export interface ComparisonReport {
   complexity: { original: string | null; candidate: string | null };
   /** Total original time / total candidate time over all inputs (null unless all match). */
   speedup: number | null;
+  verification: {
+    /** Random tests (C++: all tests in a runtime-checked build) — the final gate. */
+    random: { matched: number; total: number; failure?: string };
+    runtimeChecked: boolean;
+    testStrength: TestStrength | null;
+  };
 }
 
 export interface OptimizerOptions {
@@ -86,6 +92,10 @@ export interface OptimizerResult {
   publicCount: number;
   privateCount: number;
   contextSkipped: string[];
+  /** How many deliberately planted bugs the tests catch (mutation analysis), or null if not measured. */
+  testStrength: TestStrength | null;
+  /** Size of the random final-verification set. */
+  randomCount: number;
 }
 
 export interface OptimizerConfig {
@@ -125,6 +135,9 @@ export class EvolutionaryOptimizer {
 
   private slowCode = '';
   private contextPrefix = '';
+  /** The part of the context the function actually uses — what the model is shown. */
+  private promptContext = '';
+  private loggedTrims = new Set<string>();
   private contextSkipped: string[] = [];
   private oracle: DifferentialTestOracle | null = null;
   /** The current population Sol. */
@@ -148,6 +161,26 @@ export class EvolutionaryOptimizer {
     this.analyzer = new CodeAnalyzer({ scriptsDir: config.scriptsDir, pythonPath: config.pythonPath });
   }
 
+  /** Prompt tokens available: the model's window minus the reply reservation and a safety margin.
+   *  undefined when the provider doesn't report a window (no budgeting then). */
+  private get promptBudget(): number | undefined {
+    const window = this.llm.contextWindow;
+    if (!window) return undefined;
+    return Math.max(1024, window - (this.llm.maxOutputTokens ?? 2048) - 256);
+  }
+
+  /** Logs (once per distinct message) what a prompt had to drop to fit the context window. */
+  private noteTrims(prompt: Prompt, log: (m: string) => void): Prompt {
+    if (prompt.trimmed?.length) {
+      const msg = `Context budget: ${prompt.trimmed.join('; ')}.`;
+      if (!this.loggedTrims.has(msg)) {
+        this.loggedTrims.add(msg);
+        log(msg);
+      }
+    }
+    return prompt;
+  }
+
   get hasSession(): boolean {
     return this.oracle !== null;
   }
@@ -162,6 +195,7 @@ export class EvolutionaryOptimizer {
     if (!oracle) throw new Error('compare() called before optimize() — no active session.');
     const [origAbs, candAbs] = await this.adapter.abstractMany([this.slowCode, candidate.code]).catch(() => [null, null]);
     const cases = await oracle.compareDetailed(candidate.code);
+    const random = await oracle.evaluateRandom(candidate.code);
     const matched = cases.filter((c) => c.match);
     const sumOrig = matched.reduce((s, c) => s + (c.originalMs ?? 0), 0);
     const sumCand = matched.reduce((s, c) => s + (c.candidateMs ?? 0), 0);
@@ -194,6 +228,7 @@ export class EvolutionaryOptimizer {
       },
       complexity: { original: await complexityOf(this.slowCode), candidate: await complexityOf(candidate.code) },
       speedup: matched.length === cases.length && sumCand > 0 && sumOrig > 0 ? sumOrig / sumCand : null,
+      verification: { random, runtimeChecked: this.language === 'cpp', testStrength: oracle.testStrength },
     };
   }
 
@@ -213,6 +248,13 @@ export class EvolutionaryOptimizer {
       log(`Context: skipped ${prepared.skipped.length} top-level statement(s) with side effects (${prepared.skipped.slice(0, 3).join('; ')}${prepared.skipped.length > 3 ? '; …' : ''}).`);
     }
 
+    const sliced = await this.adapter.sliceContext(prepared.code, slowCode).catch(() => ({ code: prepared.code, kept: 0, total: 0 }));
+    if (sliced.total > 0 && sliced.kept < sliced.total) {
+      log(`Prompt context: the function uses ${sliced.kept} of the ${sliced.total} definitions above it; only those are sent to the model.`);
+    }
+    const budget = this.promptBudget;
+    if (budget) log(`Context budget: ~${budget.toLocaleString()} prompt tokens (window ${this.llm.contextWindow!.toLocaleString()}, reply ${(this.llm.maxOutputTokens ?? 2048).toLocaleString()}).`);
+
     log('Generating test inputs and capturing the original function’s behaviour…');
     const oracle = await DifferentialTestOracle.build(this.llm, this.adapter, slowCode, {
       contextPrefix: prepared.code,
@@ -223,6 +265,8 @@ export class EvolutionaryOptimizer {
 
     this.slowCode = slowCode;
     this.contextPrefix = prepared.code;
+    this.promptContext = sliced.code;
+    this.loggedTrims.clear();
     this.contextSkipped = prepared.skipped;
     this.oracle = oracle;
     this.sol = [];
@@ -233,7 +277,7 @@ export class EvolutionaryOptimizer {
 
     log(`Initial population: generating ${generationNumber} chain-of-thought candidate(s)…`);
     const seeds = await this.generateCandidates(
-      buildInitialPrompt(this.language, slowCode, prepared.code),
+      this.noteTrims(buildInitialPrompt(this.language, slowCode, this.promptContext, this.promptBudget), log),
       generationNumber,
       0,
       opts,
@@ -366,7 +410,10 @@ export class EvolutionaryOptimizer {
           ` — generating ${generationNumber} candidate(s)…`,
       );
 
-      const prompt = buildIterationPrompt(this.language, this.slowCode, representative, retrieved, this.contextPrefix);
+      const prompt = this.noteTrims(
+        buildIterationPrompt(this.language, this.slowCode, representative, retrieved, this.promptContext, this.promptBudget),
+        log,
+      );
       let fresh: Candidate[] = [];
       try {
         fresh = await this.generateCandidates(prompt, generationNumber, iteration, opts);
@@ -419,9 +466,18 @@ export class EvolutionaryOptimizer {
     }
     const verify = async (cands: Candidate[]) => {
       for (const c of cands) {
-        const priv = await oracle.evaluatePrivate(c.code);
+        let priv = await oracle.evaluatePrivate(c.code);
+        if (priv.acc === 1) {
+          // Last gate: random tests shaped like the real inputs (and, for C++, every test again in a
+          // build with bounds-checked containers and undefined-behaviour traps).
+          const rnd = await oracle.evaluateRandom(c.code);
+          if (rnd.matched < rnd.total) {
+            const what = this.language === 'cpp' ? 'random / runtime-checked testing' : 'random testing';
+            priv = { ...priv, acc: rnd.matched / rnd.total, speedup: 1, error: `failed ${what} ${rnd.failure ?? ''}`.trim() };
+          }
+        }
         finalists.push({ ...c, ...priv, publicAcc: c.acc, publicSpeedup: c.speedup });
-        if (priv.acc !== 1) log(`#${c.id} failed the held-out tests: ${priv.error ?? 'output did not match'}`);
+        if (priv.acc !== 1) log(`#${c.id} failed final verification: ${priv.error ?? 'output did not match'}`);
       }
     };
     await verify(eligible);
@@ -468,6 +524,8 @@ export class EvolutionaryOptimizer {
       publicCount: oracle.publicCount,
       privateCount: oracle.privateCount,
       contextSkipped: this.contextSkipped,
+      testStrength: oracle.testStrength,
+      randomCount: oracle.randomCount,
     };
   }
 }

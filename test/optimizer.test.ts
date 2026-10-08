@@ -108,7 +108,7 @@ test('if the top candidates fail the held-out tests, lower-ranked correct ones a
   const result = await opt.optimize(SLOW, { maxIterations: 1, generationNumber: 2, topK: 1, onProgress: (m) => logs.push(m) });
   const tricky = result.finalists.find((f) => f.code === TRICKY);
   assert.ok(tricky && tricky.acc < 1, 'the tricky candidate is caught by the held-out tests');
-  assert.ok(logs.some((l) => /failed the held-out tests/.test(l)), 'the failure reason is logged');
+  assert.ok(logs.some((l) => /failed final verification/.test(l)), 'the failure reason is logged');
   assert.equal(result.best?.code, FAST, 'the slower but correct candidate is still found');
   assert.ok(result.improved);
 });

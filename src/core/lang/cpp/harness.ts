@@ -335,7 +335,9 @@ ${declareArgs}
       }
 
       double budget_ms = 2000.0;
-      if (first_ms >= 100.0) {
+      if (!g_timing) {
+        ${timeVar} = first_ms;  // correctness-only run: no repeated timing
+      } else if (first_ms >= 100.0) {
         std::vector<double> times; times.push_back(first_ms);
         auto start = std::chrono::steady_clock::now();
         for (int rep = 0; rep < 8; ++rep) {
@@ -416,7 +418,10 @@ ${cand.body}
 }
 ${base ? `namespace base {\n${base.body}\n}` : ''}
 
-int main() {
+static bool g_timing = true;
+
+int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--no-timing") g_timing = false;
   std::ios::sync_with_stdio(false);
   int n_cases = 0;
   if (!(std::cin >> n_cases)) { std::cout << "COMPILE_OK 0\\n"; return 0; }
@@ -448,7 +453,7 @@ ${callBlock(sig, 'cand', 'cand_ms', true)}
 
 ${
   base
-    ? `    if (ok) {
+    ? `    if (ok && g_timing) {
       try {
 ${callBlock(sig, 'base', 'base_ms', false)}
       } catch (...) { base_ms = -1.0; }

@@ -174,11 +174,22 @@ def main():
         except BaseException:
             baseline_func = None
 
+    # Correctness-only mode (random testing, mutation analysis, determinism checks): one call per
+    # input, no repeated timing and no baseline — hundreds of inputs then take well under a second.
+    timing = payload.get('timing', True)
+
     results = []
     for args in inputs:
         start = time.perf_counter()
         try:
-            output, stdout_text, args_after, avg_ms = timed_call(func, args)
+            if timing:
+                output, stdout_text, args_after, avg_ms = timed_call(func, args)
+            else:
+                buf = io.StringIO()
+                call_args = copy.deepcopy(args)
+                with contextlib.redirect_stdout(buf):
+                    output = func(*call_args)
+                stdout_text, args_after, avg_ms = buf.getvalue(), call_args, (time.perf_counter() - start) * 1000
             # A function's printed output and its effect on mutable arguments are part of its
             # observable behaviour — comparing return values alone would call an in-place sort
             # that returns None "equal" to one that does nothing at all.
@@ -190,7 +201,7 @@ def main():
                 'timeMs': avg_ms,
             }
 
-            if baseline_func is not None:
+            if baseline_func is not None and timing:
                 try:
                     _, _, _, baseline_ms = timed_call(baseline_func, args)
                     entry['baselineTimeMs'] = baseline_ms
@@ -200,7 +211,7 @@ def main():
             results.append(entry)
         except BaseException as e:
             elapsed = (time.perf_counter() - start) * 1000
-            results.append({'ok': False, 'error': describe(e), 'timeMs': elapsed})
+            results.append({'ok': False, 'error': describe(e), 'errorType': type(e).__name__, 'timeMs': elapsed})
 
     emit({'results': results})
 

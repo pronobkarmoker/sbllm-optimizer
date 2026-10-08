@@ -70,6 +70,34 @@ The search loop, fitness evaluation and test oracle are language-independent: th
 
 Full design rationale is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## How a result is verified
+
+Every candidate the model writes is untrusted. It must pass every gate below; failing any one rules it out.
+
+| # | Gate | What it rejects |
+|---|---|---|
+| 1 | Parse the reply (JSON `code`, or the last code block); replies stuck in a repetition loop are stopped early | Replies without usable code |
+| 2 | Mechanical repair — strip example usage / `print`s / an added `main()`, rename a renamed function back, add missing standard imports — then **every gate below still applies** | Junk that would run during testing or land in your file |
+| 3 | Same function name and number of parameters | Signature changes |
+| 4 | Load / compile in a separate process with a time limit (crash, `sys.exit()`, hang = failure) | Syntax and compile errors |
+| 5 | **Differential testing** against the original on the search tests: return value, printed output, argument state after the call — and, on inputs where the original **raises**, the candidate must raise too | Any behaviour difference |
+| 6 | Test inputs: model-generated (filtered to the function's real contract and checked for **determinism**), derived (reversed / with a duplicate), 4 large stress inputs | Code that assumes sorted or unique data |
+| 7 | Paired timing in the same process | Fake speedups from noise |
+| 8 | Held-out tests the search never saw, ≥ 1.1x faster | Overfitting to the search tests |
+| 9 | **Random testing**: ~100 inputs shaped like the real ones, biased toward duplicates, sorted/reversed and empty lists, and the code's own boundary constants (`x < 10` → 9, 10, 11). For C++, every test is also re-run in a **runtime-checked build** (bounds-checked containers, undefined-behaviour traps) | Bugs the generated tests miss; memory errors that happen to give the right answer |
+| 10 | Human review in the Compare view; Apply only for verified results; undoable | Anything you don't approve |
+
+**Test strength.** Before the search, small bugs are planted in the *original* (`==` → `!=`, `<` → `<=`, off-by-one constants, `and` ↔ `or`, …) and the tests must catch them. A bug only a random input catches promotes that input into the tests. The result ("the tests catch 9 of 10 planted bugs") is shown with every result, so you know how much a "verified" label is worth.
+
+A function whose output differs between two runs on the same input (randomness, the clock, external state) is reported up front: its behaviour can't be compared.
+
+## How prompts fit the model's context window
+
+- **Explicit window.** Ollama's default window is small and it *silently* cuts longer prompts (measured: a 9–10k-token prompt arrived as 2,050 tokens). The window is now always set explicitly (`sbllmOptimizer.ollamaContextWindow`, default 8192 — fits a 1.5B model on an 8 GB machine; 32k ran out of memory there), with 2,048 tokens reserved for the reply.
+- **Only the context the function uses.** The code above the function is sliced to the definitions it actually references, transitively (a helper it calls and the constant that helper reads). Execution still uses the full side-effect-free context, so slicing can never break a run.
+- **Priority trimming.** If a prompt still doesn't fit, parts are shortened in this order until it does: file context → signatures only; patterns → diff; incorrect versions → their error only; patterns → one-line description; file context → omitted; only the best version kept. The rules, output format, the function itself and the best version are never cut. Every trim is logged.
+- **No chat history, by design.** Each call is a fresh prompt; the search's memory lives in the optimizer (population + measured results), so prompts don't grow over iterations. Unchanging parts (rules, function, context) come first, so the server can reuse its computation across the samples of an iteration.
+
 ## Requirements
 
 - [VS Code](https://code.visualstudio.com/) 1.85+
@@ -110,6 +138,7 @@ Small local models (1–3B) work, but the search is far more effective with a 7B
 | `sbllmOptimizer.llmProvider` | `"ollama"` | `"ollama"`, `"gemini"` or `"openai"` |
 | `sbllmOptimizer.ollamaHost` | `http://127.0.0.1:11434` | Local Ollama server URL |
 | `sbllmOptimizer.ollamaModel` | `qwen2.5-coder:1.5b` | Ollama model tag |
+| `sbllmOptimizer.ollamaContextWindow` | `8192` | Context window requested from Ollama (prompt + reply) |
 | `sbllmOptimizer.geminiModel` | `gemini-3.6-flash` | Gemini model |
 | `sbllmOptimizer.openaiModel` | `gpt-5-mini` | Model for the OpenAI-compatible provider |
 | `sbllmOptimizer.openaiBaseUrl` | *(empty)* | OpenAI-compatible endpoint; empty = OpenAI |

@@ -29,5 +29,6 @@ export function buildCliProvider(): { provider: LLMProvider; label: string } {
   }
 
   const model = process.env.OLLAMA_MODEL ?? 'qwen2.5-coder:1.5b';
-  return { provider: new OllamaProvider({ model, host: process.env.OLLAMA_HOST }), label: `ollama (${model})` };
+  const contextWindow = process.env.OLLAMA_NUM_CTX ? Number(process.env.OLLAMA_NUM_CTX) : undefined;
+  return { provider: new OllamaProvider({ model, host: process.env.OLLAMA_HOST, contextWindow }), label: `ollama (${model})` };
 }

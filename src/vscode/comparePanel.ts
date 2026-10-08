@@ -236,6 +236,18 @@ function renderShell(cspSource: string): string {
       r.complexity.original && r.complexity.candidate && r.complexity.original !== r.complexity.candidate
         ? 'Asymptotic improvement' : 'Same asymptotic class (constant-factor change)'));
 
+    const v = r.verification;
+    if (v) {
+      const rnd = v.random;
+      const okRandom = rnd.total > 0 && rnd.matched === rnd.total;
+      const ts = v.testStrength;
+      const vc = card('Verification', rnd.total ? rnd.matched + ' / ' + rnd.total : '—',
+        (rnd.total ? (v.runtimeChecked ? 'random + all tests in a runtime-checked build (bounds checks, UB traps) pass' : 'random tests (shaped like the real inputs) pass') : 'no random tests') +
+        (rnd.failure ? ' — first failure ' + rnd.failure : '') +
+        (ts ? '. Test strength: the tests catch ' + ts.killed + ' of ' + ts.mutants + ' deliberately planted bugs' + (ts.survivors.length ? ' (not caught: ' + ts.survivors.slice(0, 2).join(', ') + ')' : '') + '.' : ''),
+        rnd.total ? (okRandom ? 'ok' : 'bad') : null);
+      cards.appendChild(vc);
+    }
     cards.appendChild(card('Speed', r.speedup ? fmtX(r.speedup) + ' faster' : '—',
       r.speedup ? 'Total time over all ' + sem.total + ' inputs, original vs optimized, measured in the same process'
                 : 'Not computed: the versions do not behave identically on every input', r.speedup ? 'ok' : null));

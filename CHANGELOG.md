@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0
+
+**Validation** — more ways a wrong "optimization" gets caught, and a measure of how far to trust the tests.
+
+- **Error behaviour is compared.** Inputs on which the original raises (e.g. `ZeroDivisionError` on an empty list) are kept as tests; a candidate must raise too instead of quietly returning a value. Resource errors (`RecursionError`, `MemoryError`) are excluded — avoiding those is an improvement.
+- **Determinism check.** The original runs twice; inputs with different results are dropped, and a function that depends on randomness or the clock is reported up front.
+- **Random testing as a final gate.** ~100 inputs shaped like the real ones, biased toward duplicates, sorted/reversed and empty lists, and the code's own numeric constants ±1. A candidate must pass them all before it can be applied. On the real "returns False unless sorted" candidate, random testing alone fails it on 54 of 100 inputs.
+- **Test strength (mutation analysis).** Small bugs are planted in the original; the tests must catch them. Random inputs that catch a bug the tests missed are promoted into the tests. Reported with every result and in the Compare view.
+- **C++ runtime-checked build** for the final gate: bounds-checked containers (`_GLIBCXX_DEBUG`) and undefined-behaviour traps. An off-by-one read past a vector's end passed every normal `-O3` test as "35x faster"; the checked build catches it.
+- Correctness-only run mode (no repeated timing): 200 Python inputs check in ~0.1 s.
+
+**Context management**
+
+- Ollama's context window is set explicitly (`sbllmOptimizer.ollamaContextWindow`, default 8192) instead of its small default, which silently cut long prompts (a 9–10k-token prompt arrived as 2,050 tokens). Reply reservation 2,048 tokens.
+- The file context shown to the model is sliced to what the function uses, transitively (Python via `ast`, C++ by function references). Execution still uses the full side-effect-free context.
+- Prompts are trimmed in priority order when they don't fit (context → signatures, patterns → diff → description, incorrect versions → error only, …); the function and the best version are never cut. Trims are logged.
+- Providers report their context window and reply reservation; budgeting applies to Ollama, Gemini and OpenAI-compatible servers.
+
 ## 0.4.4
 
 - **Patterns are shown to the model as complete before/after example functions**, labelled "a DIFFERENT function — reuse only the technique", instead of bare diff lines. The bare `+ allowed_set = set(allowed)` lines led small models to copy names that don't exist in the user's function (`NameError: name 'allowed' is not defined`, or an added `allowed` parameter). Same prompt, 6 replies each with qwen2.5-coder:1.5b: 4/6 correct with diffs, 6/6 with full examples. Long mined patterns (whole programs) still use the compact diff.

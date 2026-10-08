@@ -562,12 +562,139 @@ def repair_imports(code, context):
     return {'ok': True, 'code': '\n'.join(imports) + '\n\n' + code, 'added': imports}
 
 
+# ---- context slicing: only what the target function depends on ----------------------------------
+
+def _bound_by(node):
+    """Names a top-level statement defines."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {(a.asname or a.name).split('.')[0] for a in node.names}
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        out = set()
+        for t in targets:
+            out |= {n.id for n in ast.walk(t) if isinstance(n, ast.Name)}
+        return out
+    if isinstance(node, ast.Try):
+        out = set()
+        for s in node.body + [s for h in node.handlers for s in h.body]:
+            out |= _bound_by(s)
+        return out
+    return set()
+
+
+def _uses(node):
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+
+
+def slice_context(context, target):
+    """The top-level statements of `context` that `target` uses, directly or through other kept
+    statements — e.g. a helper the function calls and the constant that helper reads. Everything
+    else in the file is noise to the model and costs context window."""
+    try:
+        ctx = ast.parse(context)
+        needed = _uses(ast.parse(target))
+    except SyntaxError:
+        return {'ok': False, 'code': context, 'kept': 0, 'total': 0}
+    nodes = list(ctx.body)
+    keep = set()
+    changed = True
+    while changed:
+        changed = False
+        for i, node in enumerate(nodes):
+            if i in keep:
+                continue
+            setrec = isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) and call_name(node.value) == 'setrecursionlimit'
+            if setrec or (_bound_by(node) & needed):
+                keep.add(i)
+                needed |= _uses(node)
+                changed = True
+    lines = context.split('\n')
+    parts = []
+    for i in sorted(keep):
+        node = nodes[i]
+        start = min([d.lineno for d in getattr(node, 'decorator_list', [])] + [node.lineno])
+        parts.append('\n'.join(lines[start - 1:node.end_lineno]))
+    return {'ok': True, 'code': '\n'.join(parts) + ('\n' if parts else ''), 'kept': len(keep), 'total': len(nodes)}
+
+
+# ---- mutation analysis: deliberately buggy variants of the original --------------------------------
+
+COMPARE_SWAPS = {ast.Eq: ast.NotEq, ast.NotEq: ast.Eq, ast.Lt: ast.LtE, ast.LtE: ast.Lt, ast.Gt: ast.GtE,
+                 ast.GtE: ast.Gt, ast.In: ast.NotIn, ast.NotIn: ast.In, ast.Is: ast.IsNot, ast.IsNot: ast.Is}
+BINOP_SWAPS = {ast.Add: ast.Sub, ast.Sub: ast.Add, ast.Mult: ast.Add, ast.FloorDiv: ast.Mult, ast.Mod: ast.FloorDiv}
+
+
+def mutation_points(func):
+    """Every single-step mutation available inside the function: (node, kind, description)."""
+    points = []
+    for n in ast.walk(func):
+        if isinstance(n, ast.Compare):
+            for k, op in enumerate(n.ops):
+                if type(op) in COMPARE_SWAPS:
+                    points.append((n, ('cmp', k), '{} -> {}'.format(type(op).__name__, COMPARE_SWAPS[type(op)].__name__)))
+        elif isinstance(n, ast.BinOp) and type(n.op) in BINOP_SWAPS:
+            points.append((n, ('bin',), '{} -> {}'.format(type(n.op).__name__, BINOP_SWAPS[type(n.op)].__name__)))
+        elif isinstance(n, ast.BoolOp):
+            points.append((n, ('bool',), 'and <-> or'))
+        elif isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not):
+            points.append((n, ('not',), 'drop `not`'))
+        elif isinstance(n, ast.Constant) and isinstance(n.value, bool):
+            points.append((n, ('boolconst',), '{} -> {}'.format(n.value, not n.value)))
+        elif isinstance(n, ast.Constant) and isinstance(n.value, int) and not isinstance(n.value, bool):
+            points.append((n, ('int',), '{} -> {}'.format(n.value, n.value + 1)))
+    return points
+
+
+def make_mutants(code, func_name, limit):
+    """Up to `limit` single-mutation variants of `func_name`, spread evenly over the function."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    funcs = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func_name]
+    if not funcs:
+        return []
+    total = len(mutation_points(funcs[0]))
+    if total == 0:
+        return []
+    step = max(1, total / float(limit))
+    chosen = sorted({int(i * step) for i in range(min(limit, total))})
+    mutants = []
+    for index in chosen:
+        t = ast.parse(code)
+        f = [n for n in t.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == func_name][0]
+        node, kind, desc = mutation_points(f)[index]
+        if kind[0] == 'cmp':
+            node.ops[kind[1]] = COMPARE_SWAPS[type(node.ops[kind[1]])]()
+        elif kind[0] == 'bin':
+            node.op = BINOP_SWAPS[type(node.op)]()
+        elif kind[0] == 'bool':
+            node.op = ast.Or() if isinstance(node.op, ast.And) else ast.And()
+        elif kind[0] == 'not':
+            node.op = ast.UAdd()  # `+x` keeps the operand but drops the negation for bools/ints
+        elif kind[0] == 'boolconst':
+            node.value = not node.value
+        elif kind[0] == 'int':
+            node.value = node.value + 1
+        try:
+            mutants.append({'description': '{} (line {})'.format(desc, getattr(node, 'lineno', '?')), 'code': ast.unparse(t)})
+        except Exception:
+            continue
+    return mutants
+
+
 def main():
     payload = json.loads(sys.stdin.read())
     mode = payload.get('mode', 'analyze')
     code = payload.get('code', '')
     try:
-        if mode == 'repair':
+        if mode == 'slice':
+            result = slice_context(code, payload.get('target', ''))
+        elif mode == 'mutants':
+            result = {'ok': True, 'mutants': make_mutants(code, payload.get('funcName', ''), int(payload.get('limit', 10)))}
+        elif mode == 'repair':
             stripped, removed = strip_top_level(code)
             result = repair_imports(stripped, payload.get('context', ''))
             result['code'] = result.get('code', stripped)

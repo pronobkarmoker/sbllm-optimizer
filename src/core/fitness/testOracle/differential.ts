@@ -1,5 +1,7 @@
 import { DegenerateOutputError, type LLMProvider } from '../../llm/llmProvider.js';
-import type { CallResult, LanguageAdapter } from '../../lang/languageAdapter.js';
+import type { CallResult, LanguageAdapter, RunOptions } from '../../lang/languageAdapter.js';
+import { PythonAdapter } from '../../lang/pythonAdapter.js';
+import { buildRandomInputs, cppMutants, type Mutant } from './testStrength.js';
 import { LANGUAGE_META } from '../../lang/languageAdapter.js';
 import { deepAlmostEqual } from '../../util/deepAlmostEqual.js';
 import { extractJson } from '../../util/json.js';
@@ -13,7 +15,7 @@ export interface OracleTestCase {
   /** Return value, printed output and post-call argument state all count as "what this call
    *  produced" — a function that only print()s, or only mutates its input, would otherwise always
    *  compare equal (None == None) regardless of what it actually did. */
-  expected: { output: unknown; stdout: string; argsAfter: unknown };
+  expected: { output: unknown; stdout: string; argsAfter: unknown; raises?: string };
   /** Synthetic large input added so timing reflects asymptotic behaviour, not call overhead. */
   stress?: boolean;
 }
@@ -26,6 +28,25 @@ export interface OracleBuildOptions {
 }
 
 const STRESS_SIZE = 2000;
+const RANDOM_TESTS = 100;
+const MUTANT_LIMIT = 10;
+const MUTANT_TIMEOUT_MS = 20_000;
+/** Errors that say "this input exhausted a resource", not "this input is invalid" — an optimized
+ *  version that avoids them (iterative instead of deep recursion) must not be penalized. */
+const RESOURCE_ERRORS = /^(RecursionError|MemoryError|SystemExit|KeyboardInterrupt|crashed|timed out)/;
+
+export interface TestStrength {
+  /** Valid (compilable) deliberate-bug variants of the original. */
+  mutants: number;
+  /** Caught by the search + held-out tests as originally generated. */
+  killedInitially: number;
+  /** Caught after adding the random inputs that exposed surviving bugs. */
+  killed: number;
+  /** Random inputs promoted into the test sets because they caught a bug the tests missed. */
+  promotedInputs: number;
+  /** Descriptions of bugs no test catches (may be equivalent mutants — same behaviour). */
+  survivors: string[];
+}
 const BATCH_TIMEOUT_MS = 90_000;
 
 /**
@@ -44,6 +65,10 @@ export class DifferentialTestOracle {
    *  same subprocess call, instead of comparing against one measurement taken at the start. */
   private baselineCode = '';
   private readonly cache = new Map<string, Fitness>();
+  /** Random tests: final gate only (never shown to the model, never used for ranking). */
+  private randomTests: OracleTestCase[] = [];
+  private readonly randomCache = new Map<string, { matched: number; total: number; failure?: string }>();
+  private strength: TestStrength | null = null;
 
   private constructor(
     private readonly llm: LLMProvider,
@@ -113,17 +138,48 @@ export class DifferentialTestOracle {
     }
 
     const cases: OracleTestCase[] = [];
+    const errorCases: OracleTestCase[] = [];
+    const errorTypes = new Set<string>();
     let timeSum = 0;
-    let failed = 0;
+    let discarded = 0;
     batch.results.forEach((r, i) => {
       if (r.ok) {
         cases.push({ args: inputs[i], expected: { output: r.output, stdout: r.stdout ?? '', argsAfter: r.argsAfter ?? null } });
         timeSum += r.timeMs;
+      } else if (!RESOURCE_ERRORS.test(r.error ?? '') && !errorTypes.has(r.errorType ?? r.error ?? '') && errorCases.length < 3) {
+        // Keep (a few distinct) inputs on which the original raises: a candidate must raise too,
+        // rather than silently returning a value for input the original rejects.
+        errorTypes.add(r.errorType ?? r.error ?? '');
+        errorCases.push({ args: inputs[i], expected: { output: null, stdout: '', argsAfter: null, raises: r.errorType ?? 'an error' } });
       } else {
-        failed++;
+        discarded++;
       }
     });
-    if (failed > 0) log(`${failed} generated input(s) raised an error on the original code and were discarded.`);
+    if (errorCases.length > 0) {
+      log(`Kept ${errorCases.length} input(s) on which the original raises (${[...errorTypes].join(', ')}): candidates must raise too.`);
+    }
+    if (discarded > 0) log(`${discarded} other generated input(s) raised an error on the original code and were discarded.`);
+
+    // Determinism: run the original again. If results differ, the function depends on randomness,
+    // the clock or external state, and comparing two versions' outputs would be meaningless.
+    if (cases.length > 0) {
+      const again = await this.adapter.runBatch(this.baselineCode, this.funcName, cases.map((c) => c.args), BATCH_TIMEOUT_MS, undefined, { timing: false });
+      const unstable = new Set<number>();
+      cases.forEach((c, i) => {
+        const r = again.results?.[i];
+        if (r && !checkCase(r, c).match) unstable.add(i);
+      });
+      if (unstable.size > cases.length / 2) {
+        throw new Error(
+          `The function gives different results for the same input on ${unstable.size} of ${cases.length} inputs — it seems to ` +
+            'depend on randomness, the clock or external state, so an optimized version cannot be checked against it.',
+        );
+      }
+      if (unstable.size > 0) {
+        for (let i = cases.length - 1; i >= 0; i--) if (unstable.has(i)) cases.splice(i, 1);
+        log(`${unstable.size} input(s) gave different results on a second run of the original and were discarded.`);
+      }
+    }
 
     if (cases.length < 1) {
       const firstErr = batch.results.find((r) => !r.ok)?.error;
@@ -190,6 +246,12 @@ export class DifferentialTestOracle {
     this.privateTests = cases.slice(splitAt);
     augCases.forEach((c, i) => (i % 2 === 0 ? this.privateTests : this.publicTests).push(c));
     stressCases.forEach((c, i) => (i % 2 === 0 ? this.publicTests : this.privateTests).push(c));
+    errorCases.forEach((c, i) => (i % 2 === 0 ? this.publicTests : this.privateTests).push(c));
+
+    throwIfAborted(opts.signal);
+    await this.buildRandomTests(cases.map((c) => c.args), log, numericConstants(slowCode));
+    throwIfAborted(opts.signal);
+    await this.measureTestStrength(slowCode, log);
     if (this.privateTests.length === 0) {
       // Too few cases to hold any out — re-verify on the public ones rather than on nothing.
       this.privateTests = [...this.publicTests];
@@ -389,6 +451,139 @@ export class DifferentialTestOracle {
     return this.cached(`private\0${code}`, () => this.evaluateAgainst(code, this.privateTests));
   }
 
+  get randomCount(): number {
+    return this.randomTests.length;
+  }
+
+  get testStrength(): TestStrength | null {
+    return this.strength;
+  }
+
+  /** Runs `code` on `tests` without timing; returns how many behaved identically and the first
+   *  failure (input + reason), or a whole-batch error. */
+  private async checkOnly(
+    code: string,
+    tests: OracleTestCase[],
+    options: RunOptions = {},
+  ): Promise<{ matched: number; total: number; failure?: string }> {
+    if (tests.length === 0) return { matched: 0, total: 0 };
+    const batch = await this.adapter.runBatch(this.withContext(code), this.funcName, tests.map((t) => t.args), BATCH_TIMEOUT_MS, undefined, {
+      timing: false,
+      ...options,
+    });
+    if (batch.compileError || !batch.results) return { matched: 0, total: tests.length, failure: batch.compileError ?? 'no results' };
+    let matched = 0;
+    let failure: string | undefined;
+    tests.forEach((t, i) => {
+      const r = batch.results![i];
+      const check = r ? checkCase(r, t) : { match: false, reason: 'no result (crashed?)' };
+      if (check.match) matched++;
+      else failure ??= `on input ${previewArgs(t.args)}: ${check.reason}`;
+    });
+    return { matched, total: tests.length, failure };
+  }
+
+  /**
+   * Final gate before a candidate may be applied: the random tests (for C++ together with all other
+   * tests in a build with bounds-checked containers and undefined-behaviour traps, so a memory error
+   * that happens to produce the right answer is caught).
+   */
+  async evaluateRandom(code: string): Promise<{ matched: number; total: number; failure?: string }> {
+    const key = `random\0${code}`;
+    const hit = this.randomCache.get(key);
+    if (hit) return hit;
+    const tests = this.adapter.id === 'cpp' ? [...this.publicTests, ...this.privateTests, ...this.randomTests] : this.randomTests;
+    const res = await this.checkOnly(code, tests, { sanitize: this.adapter.id === 'cpp' });
+    this.randomCache.set(key, res);
+    return res;
+  }
+
+  /** Random inputs shaped like the real ones, with ground truth from the original. */
+  private async buildRandomTests(examples: unknown[][], log: (m: string) => void, constants: number[]): Promise<void> {
+    const inputs = buildRandomInputs(examples, RANDOM_TESTS, undefined, constants);
+    if (inputs.length === 0) return;
+    const batch = await this.adapter.runBatch(this.baselineCode, this.funcName, inputs, BATCH_TIMEOUT_MS, undefined, { timing: false });
+    batch.results?.forEach((r, i) => {
+      if (r.ok) {
+        this.randomTests.push({ args: inputs[i], expected: { output: r.output, stdout: r.stdout ?? '', argsAfter: r.argsAfter ?? null } });
+      } else if (!RESOURCE_ERRORS.test(r.error ?? '')) {
+        this.randomTests.push({ args: inputs[i], expected: { output: null, stdout: '', argsAfter: null, raises: r.errorType ?? 'an error' } });
+      }
+    });
+    if (this.randomTests.length > 0) log(`Built ${this.randomTests.length} random tests (shaped like the real inputs) for final verification.`);
+  }
+
+  /**
+   * Mutation analysis: plants small deliberate bugs in the ORIGINAL (== -> !=, < -> <=, off-by-one,
+   * and <-> or, ...) and checks that the search + held-out tests catch them. A bug the tests miss but
+   * a random test catches promotes that random input into the tests. What survives everything is
+   * reported: either a mutant that behaves identically (harmless) or a gap no test covers.
+   */
+  private async measureTestStrength(slowCode: string, log: (m: string) => void): Promise<void> {
+    let mutants: Mutant[] = [];
+    try {
+      mutants =
+        this.adapter instanceof PythonAdapter
+          ? await this.adapter.mutants(slowCode, this.funcName, MUTANT_LIMIT)
+          : cppMutants(slowCode, this.funcName, MUTANT_LIMIT);
+    } catch {
+      return;
+    }
+    if (mutants.length === 0) return;
+
+    const tests = [...this.publicTests, ...this.privateTests];
+    const random = this.randomTests;
+    let valid = 0;
+    let killedInitially = 0;
+    let promoted = 0;
+    const survivors: string[] = [];
+    for (const m of mutants) {
+      // Short limit: a planted bug easily turns a loop into an infinite one (< -> <=), and that
+      // counts as caught anyway.
+      const batch = await this.adapter.runBatch(this.withContext(m.code), this.funcName, [...tests, ...random].map((t) => t.args), MUTANT_TIMEOUT_MS, undefined, {
+        timing: false,
+      });
+      if (batch.compileError && /error|Unsupported/i.test(batch.compileError) && !/timed out/.test(batch.compileError)) continue; // not a valid mutant
+      valid++;
+      const results = batch.results ?? [];
+      const killedBy = (from: number, to: number) => {
+        for (let i = from; i < to; i++) {
+          const r = results[i];
+          const t = i < tests.length ? tests[i] : random[i - tests.length];
+          if (!r || !checkCase(r, t).match) return i;
+        }
+        return -1;
+      };
+      if (batch.compileError || killedBy(0, tests.length) !== -1) {
+        killedInitially++;
+        continue;
+      }
+      const hit = killedBy(tests.length, tests.length + random.length);
+      if (hit !== -1) {
+        // Promote the random input that exposed this bug, alternating between the two test sets.
+        const t = random[hit - tests.length];
+        (promoted % 2 === 0 ? this.publicTests : this.privateTests).push(t);
+        promoted++;
+      } else {
+        survivors.push(m.description);
+      }
+    }
+    if (valid === 0) return;
+    this.strength = {
+      mutants: valid,
+      killedInitially,
+      killed: valid - survivors.length,
+      promotedInputs: promoted,
+      survivors,
+    };
+    log(
+      `Test strength: the tests catch ${this.strength.killed} of ${valid} deliberately planted bugs` +
+        (promoted ? ` (${promoted} random input(s) promoted into the tests to catch ones they missed)` : '') +
+        (survivors.length ? `; not caught: ${survivors.slice(0, 3).join(', ')}${survivors.length > 3 ? ', …' : ''}` : '') +
+        '.',
+    );
+  }
+
   /**
    * Execution-based semantic comparison for the Compare view: runs `code` and the original on EVERY
    * test input (public, held-out and stress) in one paired batch, and reports each case — the input,
@@ -409,7 +604,7 @@ export class DifferentialTestOracle {
     );
     return all.map(({ test, split }, i): CaseComparison => {
       const r = batch.results?.[i];
-      const expected = previewBehaviour(test.expected.output, test.expected.stdout);
+      const expected = test.expected.raises ? `raises ${test.expected.raises}` : previewBehaviour(test.expected.output, test.expected.stdout);
       if (!r) {
         return {
           split, stress: !!test.stress, input: previewArgs(test.args), expected, actual: null, match: false,
@@ -422,7 +617,7 @@ export class DifferentialTestOracle {
         stress: !!test.stress,
         input: previewArgs(test.args),
         expected,
-        actual: r.ok ? previewBehaviour(r.output, r.stdout ?? '') : null,
+        actual: r.ok ? previewBehaviour(r.output, r.stdout ?? '') : `raises ${r.errorType ?? 'an error'}`,
         match: check.match,
         reason: check.match ? undefined : check.reason,
         originalMs: typeof r.baselineTimeMs === 'number' && r.baselineTimeMs >= 0 ? r.baselineTimeMs : null,
@@ -488,6 +683,7 @@ export class DifferentialTestOracle {
       const check = checkCase(r, t);
       if (check.match) {
         matched++;
+        if (!r.ok) return; // an expected error: correct, but not something to time
         candSum += r.timeMs;
         candCount++;
         if (typeof r.baselineTimeMs === 'number' && r.baselineTimeMs > 0) {
@@ -536,6 +732,12 @@ export interface CaseComparison {
 /** Whether a call result behaves identically to the ground truth — the single definition of
  *  "correct" used both for scoring and for the Compare view. */
 function checkCase(r: CallResult, t: OracleTestCase): { match: boolean; reason: string } {
+  // The original raises on this input: the candidate must fail too, not quietly return a value.
+  if (t.expected.raises) {
+    return r.ok
+      ? { match: false, reason: `returned a value where the original raises ${t.expected.raises}` }
+      : { match: true, reason: '' };
+  }
   if (!r.ok) return { match: false, reason: r.error ?? 'raised an error' };
   const expected = t.expected;
   if (!deepAlmostEqual(r.output, expected.output)) return { match: false, reason: 'return value did not match the original' };
@@ -723,6 +925,14 @@ export function salvageInputEntries(text: string): unknown[] {
     }
   }
   return out;
+}
+
+/** Numeric literals in the source (comments and strings excluded) — candidate boundary values. */
+export function numericConstants(code: string): number[] {
+  const stripped = code
+    .replace(/#[^\n]*|\/\/[^\n]*|\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g, ' ');
+  return [...new Set((stripped.match(/(?<![\w.])\d+(?:\.\d+)?(?![\w.])/g) ?? []).map(Number))];
 }
 
 function normalizePythonLiterals(text: string): string {

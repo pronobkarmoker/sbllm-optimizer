@@ -235,6 +235,39 @@ export function findCppFunctions(code: string): CppFunctionInfo[] {
   return out;
 }
 
+/**
+ * The file context without the functions the target never uses (directly or through other kept
+ * functions). Directives, globals, types and declarations are kept — they are small and a function
+ * may depend on them in ways a name scan can't see (types, macros, overload resolution).
+ */
+export function sliceCppContext(context: string, target: string): { code: string; kept: number; total: number } {
+  const fns = findCppFunctions(context).filter((f) => f.name !== 'main');
+  if (fns.length === 0) return { code: context, kept: 0, total: 0 };
+  const masked = maskCpp(context);
+  const idents = (text: string) => new Set(text.match(/[A-Za-z_]\w*/g) ?? []);
+  const needed = idents(maskCpp(target));
+  const keep = new Set<number>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    fns.forEach((f, i) => {
+      if (keep.has(i) || !needed.has(f.name)) return;
+      keep.add(i);
+      for (const id of idents(masked.slice(f.start, f.bodyClose + 1))) needed.add(id);
+      changed = true;
+    });
+  }
+  let code = context;
+  fns
+    .map((f, i) => ({ f, i }))
+    .filter(({ i }) => !keep.has(i))
+    .sort((a, b) => b.f.start - a.f.start)
+    .forEach(({ f }) => {
+      code = code.slice(0, f.start) + code.slice(f.bodyClose + 1);
+    });
+  return { code: code.replace(/\n{3,}/g, '\n\n'), kept: keep.size, total: fns.length };
+}
+
 /** Removes `main()` (and nothing else) — the file context must be compilable into a harness that has
  *  its own main, and a user's main is driver code the target function cannot depend on. */
 export function stripMainFunction(code: string): { code: string; removed: boolean } {

@@ -6,6 +6,8 @@ export interface OpenAIProviderOptions {
   /** Any OpenAI-compatible Chat Completions endpoint (OpenAI, Azure-compatible proxies, LM Studio,
    *  vLLM, ...). Defaults to the OpenAI API. */
   baseUrl?: string;
+  /** Override the assumed context window (e.g. for a local OpenAI-compatible server). */
+  contextWindow?: number;
 }
 
 /**
@@ -14,6 +16,9 @@ export interface OpenAIProviderOptions {
  */
 export class OpenAIProvider implements LLMProvider {
   readonly id = 'openai';
+  /** OpenAI's current models have large windows; a local OpenAI-compatible server is assumed small. */
+  readonly contextWindow: number;
+  readonly maxOutputTokens = 8192;
   private readonly baseUrl: string;
   /** Some models (reasoning models) reject a custom temperature; remembered after the first 400. */
   private temperatureSupported = true;
@@ -21,6 +26,7 @@ export class OpenAIProvider implements LLMProvider {
   constructor(private readonly opts: OpenAIProviderOptions) {
     if (!opts.apiKey && !opts.baseUrl) throw new Error('OpenAIProvider: apiKey is required');
     this.baseUrl = (opts.baseUrl?.trim() || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    this.contextWindow = opts.contextWindow ?? (opts.baseUrl ? 8192 : 128_000);
   }
 
   async generate(prompt: Prompt, opts: GenerateOptions = {}): Promise<LLMResponse> {

@@ -2,7 +2,7 @@
   "name": "sbllm-optimizer",
   "displayName": "SBLLM Optimizer",
   "description": "Search-based LLM code optimization for Python and C++ (SBLLM, ICSE'25) — finds inefficient code, generates candidate optimizations, verifies each by running it, and evolves toward a faster, correct solution.",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "author": {
     "name": "Pronob Karmoker",
     "url": "https://github.com/pronobkarmoker"
@@ -268,6 +268,13 @@
           "type": "boolean",
           "default": false,
           "description": "Show the Optimize CodeLens above every top-level function, not just flagged ones."
+        },
+        "sbllmOptimizer.ollamaContextWindow": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 2048,
+          "maximum": 131072,
+          "description": "Context window (tokens, prompt + reply) requested from Ollama. Ollama's own default is small and silently cuts longer prompts. 8192 fits a 1.5B model on an 8 GB machine; raise it if you have the RAM. Prompts are trimmed to fit (file context sliced to what the function uses, then shortened)."
         }
       }
     }

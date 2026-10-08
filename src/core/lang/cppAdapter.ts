@@ -1,9 +1,9 @@
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { CallResult, LanguageAdapter, PreparedContext, RunBatchResult } from './languageAdapter.js';
+import type { CallResult, LanguageAdapter, PreparedContext, RunBatchResult, RunOptions } from './languageAdapter.js';
 import { buildHarness, serializeArgs, parseCppSignature } from './cpp/harness.js';
-import { findCppFunctions, stripMainFunction } from './cpp/cppSource.js';
+import { findCppFunctions, sliceCppContext, stripMainFunction } from './cpp/cppSource.js';
 import { runProcess } from '../util/process.js';
 
 export function defaultCxx(): string {
@@ -57,6 +57,42 @@ export class CppAdapter implements LanguageAdapter {
     this.cxx = opts.compiler?.trim() || defaultCxx();
   }
 
+  private sanitizerProbe: Promise<string[]> | null = null;
+
+  /** Runtime-check flags this compiler accepts, probed once: _GLIBCXX_DEBUG (bounds-checked
+   *  std::vector etc. — works on MinGW too) plus UBSan in trap mode when available. */
+  sanitizerFlags(): Promise<string[]> {
+    this.sanitizerProbe ??= (async () => {
+      const candidates = [
+        ['-D_GLIBCXX_DEBUG', '-fsanitize=undefined', '-fsanitize-undefined-trap-on-error'],
+        ['-D_GLIBCXX_DEBUG'],
+      ];
+      let dir: string;
+      try {
+        dir = mkdtempSync(path.join(tmpdir(), 'sbllm-probe-'));
+      } catch {
+        return [];
+      }
+      try {
+        const src = path.join(dir, 'p.cpp');
+        writeFileSync(src, ['#include <vector>', 'int main() { std::vector<int> v(3); return v[1]; }', ''].join('\n'), 'utf8');
+        for (const f of candidates) {
+          const exe = path.join(dir, process.platform === 'win32' ? 'p.exe' : 'p');
+          const r = await runProcess(this.cxx, ['-std=c++17', '-O1', ...f, '-o', exe, src], '', 60_000);
+          if (r.code === 0 && (await runProcess(exe, [], '', 10_000)).code === 0) return f;
+        }
+        return [];
+      } finally {
+        try {
+          rmSync(dir, { recursive: true, force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
+    return this.sanitizerProbe;
+  }
+
   async abstract(code: string): Promise<string | null> {
     return abstractCpp(code);
   }
@@ -88,6 +124,10 @@ export class CppAdapter implements LanguageAdapter {
     return { code, skipped: removed ? ['main() — driver code, not something the function depends on'] : [] };
   }
 
+  async sliceContext(context: string, target: string): Promise<{ code: string; kept: number; total: number }> {
+    return sliceCppContext(context, target);
+  }
+
   /** Checks that `slowCode` can be driven by the harness, so unsupported signatures fail fast with
    *  a clear reason instead of as a confusing compile error deep inside the search. */
   checkSupported(code: string, funcName: string): string | null {
@@ -101,7 +141,9 @@ export class CppAdapter implements LanguageAdapter {
     inputs: unknown[][],
     timeoutMs = 60_000,
     baselineCode?: string,
+    options: RunOptions = {},
   ): Promise<RunBatchResult> {
+    const timing = options.timing !== false;
     const parsed = parseCppSignature(code, funcName);
     if (!parsed.ok) {
       return {
@@ -122,10 +164,14 @@ export class CppAdapter implements LanguageAdapter {
     const exe = path.join(dir, process.platform === 'win32' ? 'harness.exe' : 'harness');
 
     try {
-      writeFileSync(src, buildHarness(sig, code, baselineCode), 'utf8');
+      writeFileSync(src, buildHarness(sig, code, timing ? baselineCode : undefined), 'utf8');
 
-      // -O3 and C++17 to match the paper's own compilation settings (§III-E).
-      const compile = await runProcess(this.cxx, ['-std=c++17', '-O3', '-o', exe, src], '', 120_000);
+      // -O3 and C++17 to match the paper's own compilation settings (§III-E). A sanitized build
+      // (correctness checks only) adds bounds-checked standard containers and traps on undefined
+      // behaviour, falling back to a plain build when the toolchain doesn't support the flags.
+      let flags = ['-std=c++17', '-O3'];
+      if (options.sanitize && (await this.sanitizerFlags()).length > 0) flags = ['-std=c++17', '-O1', ...(await this.sanitizerFlags())];
+      const compile = await runProcess(this.cxx, [...flags, '-o', exe, src], '', 120_000);
       if (compile.spawnError) {
         return { compileError: `${compile.spawnError} Install a C++ compiler (g++) or set sbllmOptimizer.cppCompiler.` };
       }
@@ -140,7 +186,7 @@ export class CppAdapter implements LanguageAdapter {
         }),
       ].join('\n');
 
-      const exec = await runProcess(exe, [], payload, timeoutMs);
+      const exec = await runProcess(exe, timing ? [] : ['--no-timing'], payload, timeoutMs);
       if (exec.spawnError) return { compileError: exec.spawnError };
       const results = parseResults(exec.stdout, inputs.length);
       if (exec.timedOut && (!results || results.length < inputs.length)) {
@@ -239,7 +285,7 @@ export function parseResults(stdout: string, expected: number): CallResult[] | n
       if (Number.isFinite(baselineMs) && baselineMs >= 0) entry.baselineTimeMs = baselineMs;
       results.push(entry);
     } else if (line.startsWith('ERR ')) {
-      results.push({ ok: false, error: unescapeLine(line.slice(4)), timeMs: 0 });
+      results.push({ ok: false, error: unescapeLine(line.slice(4)), errorType: 'exception', timeMs: 0 });
     }
   }
   return results;

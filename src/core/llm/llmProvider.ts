@@ -1,6 +1,8 @@
 export interface Prompt {
   system?: string;
   user: string;
+  /** Parts shortened or dropped to fit the context window (for the progress log). */
+  trimmed?: string[];
 }
 
 export interface LLMResponse {
@@ -19,6 +21,10 @@ export interface GenerateOptions {
 
 export interface LLMProvider {
   readonly id: string;
+  /** Total tokens (prompt + reply) the model can handle in one call, when known. */
+  readonly contextWindow?: number;
+  /** Tokens reserved for the reply. */
+  readonly maxOutputTokens?: number;
   generate(prompt: Prompt, opts?: GenerateOptions): Promise<LLMResponse>;
 }
 

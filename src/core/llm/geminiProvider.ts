@@ -8,6 +8,8 @@ export interface GeminiProviderOptions {
 
 export class GeminiProvider implements LLMProvider {
   readonly id = 'gemini';
+  readonly contextWindow = 1_000_000;
+  readonly maxOutputTokens = 8192;
   private readonly client: GoogleGenerativeAI;
   private readonly modelName: string;
 

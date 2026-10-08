@@ -30,7 +30,7 @@ export async function buildProvider(context: vscode.ExtensionContext): Promise<{
 
   const model = cfg.get<string>('ollamaModel', 'qwen2.5-coder:1.5b');
   return {
-    provider: new OllamaProvider({ model, host: cfg.get<string>('ollamaHost') }),
+    provider: new OllamaProvider({ model, host: cfg.get<string>('ollamaHost'), contextWindow: cfg.get<number>('ollamaContextWindow', 8192) }),
     label: `Ollama (${model})`,
   };
 }

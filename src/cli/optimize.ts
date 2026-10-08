@@ -83,6 +83,20 @@ async function main() {
     console.log(`Structural similarity: ${pct(s.structuralSimilarity)} (AST, names/literals normalized)`);
     console.log(`Lines:                 ${s.linesUnchanged} unchanged, ${s.linesChanged} changed, ${s.linesAdded} added, ${s.linesRemoved} removed`);
     console.log(`Complexity:            ${cmp.complexity.original ?? '?'} -> ${cmp.complexity.candidate ?? '?'}`);
+    const v = cmp.verification;
+    console.log(
+      `Random tests:          ${v.random.matched}/${v.random.total} passed` +
+        (v.runtimeChecked ? ' (all tests re-run in a runtime-checked build)' : '') +
+        (v.random.failure ? ` — first failure ${v.random.failure}` : ''),
+    );
+    if (v.testStrength) {
+      const t = v.testStrength;
+      console.log(
+        `Test strength:         ${t.killed}/${t.mutants} planted bugs caught` +
+          (t.promotedInputs ? ` (${t.promotedInputs} random input(s) promoted into the tests)` : '') +
+          (t.survivors.length ? `; not caught: ${t.survivors.join(', ')}` : ''),
+      );
+    }
     for (const c of cmp.semantic.cases) {
       const set = c.stress ? 'stress  ' : c.split === 'public' ? 'search  ' : 'held-out';
       console.log(`  ${c.match ? '✓' : '✗'} [${set}] ${c.input.slice(0, 50).padEnd(50)} orig ${fmt(c.originalMs).padStart(10)}  opt ${fmt(c.candidateMs).padStart(10)}`);

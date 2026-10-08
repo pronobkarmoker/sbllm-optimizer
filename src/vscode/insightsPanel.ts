@@ -330,7 +330,10 @@ function renderShell(cspSource: string): string {
     $('summary-note').textContent =
       r.history.length + ' candidate(s) over ' + r.iterations.length + ' iteration(s); search ' + stop + '. ' +
       r.publicCount + ' public / ' + r.privateCount + ' private test case(s).' +
-      (r.contextSkipped && r.contextSkipped.length ? ' Skipped ' + r.contextSkipped.length + ' top-level statement(s) with side effects.' : '');
+      (r.contextSkipped && r.contextSkipped.length ? ' Skipped ' + r.contextSkipped.length + ' top-level statement(s) with side effects.' : '') +
+      (r.randomCount ? ' Final check: ' + r.randomCount + ' random tests.' : '') +
+      (r.testStrength ? ' Test strength: the tests catch ' + r.testStrength.killed + ' of ' + r.testStrength.mutants + ' deliberately planted bugs' +
+        (r.testStrength.killed < r.testStrength.mutants ? ' — treat the result with extra care.' : '.') : '');
   }
 
   function renderFinalists(r) {
